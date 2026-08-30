@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+
+# Data and artefacts are regenerable; keep them out of git.
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+artifacts/models/*
+artifacts/reports/*
+artifacts/figures/*
+!artifacts/**/.gitkeep
+# ...except the figure the README embeds.
+!artifacts/figures/eval_full_fusion.png
+
+# setuptools editable-install metadata
+src/*.egg-info/
