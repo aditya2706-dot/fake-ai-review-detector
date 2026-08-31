@@ -6,8 +6,9 @@
 |---|---|
 | **Task** | Binary classification: is this e-commerce review inauthentic? |
 | **Output** | Calibrated P(fake) in [0,1], plus a tiered action and reason codes |
-| **Architecture** | Two-stage stack — TF-IDF + LogisticRegression → `text_score`; gradient-boosted trees over behavioural + linguistic + `text_score` |
+| **Architecture** | Two-stage stack — TF-IDF + LogisticRegression → `text_score`; gradient-boosted trees over behavioural + graph + linguistic + `text_score` |
 | **Training data** | Synthetic marketplace, 40k reviews, ~19% positive. **Not production data.** |
+| **Test PR-AUC** | 0.914 temporal / 0.905 cold-reviewer, against a 0.172 base rate |
 | **Primary metric** | PR-AUC on a temporal split |
 | **Version** | 0.1.0 |
 
@@ -42,6 +43,16 @@ reported against the base rate so the real lift is visible.
 pipeline — causal features, no split leakage, no train/serve skew — not
 real-world performance. Re-measure on labelled production data before trusting
 any number for planning.
+
+**The generator was revised during development** — farms given reusable account
+rosters, farm accounts given genuine cover traffic — which moved every reported
+figure. `docs/METHODOLOGY.md` §5.1 publishes the before and after side by side.
+
+**Known blind spot, stated plainly:** the model recalls **nothing** at the
+operating threshold for authors with fewer than three prior reviews. Graph
+features were built specifically to address this and did not
+(`docs/ROADMAP.md` phase 7). Any deployment must route first-time reviewers to
+a policy that does not depend on this model.
 
 ## Factors examined
 

@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from frd.config import Config, SynthConfig
 from frd.data.splits import temporal_split
 from frd.data.synth import generate
-from frd.models.pipeline import FakeReviewDetector
+from frd.models.pipeline import ALL_BLOCKS, FakeReviewDetector
 from frd.train import prepare_dataset
 
 
@@ -32,8 +32,13 @@ def trained(tmp_path_factory):
     ))
     prepared = prepare_dataset(df, verbose=False)
     split = temporal_split(prepared)
-    det = FakeReviewDetector(blocks=("text", "linguistic", "behaviour"),
-                             cfg=cfg, oof_folds=2)
+    # ALL_BLOCKS, deliberately. The graph block is the one most likely to skew
+    # between training and serving: it is the only family whose values depend on
+    # accounts other than the author's, so the API's assembled context frame has
+    # the furthest to fall short of what `prepare_dataset` saw. Testing the skew
+    # guarantee against the three easy blocks would have been testing the wrong
+    # three.
+    det = FakeReviewDetector(blocks=ALL_BLOCKS, cfg=cfg, oof_folds=2)
     det.fit(split.train)
     det.calibrate(split.val)
     det.set_threshold(0.5)
@@ -70,7 +75,7 @@ def test_health_reports_loaded_model(client):
     body = r.json()
     assert body["model_loaded"] is True
     assert body["status"] == "ok"
-    assert set(body["blocks"]) == {"text", "linguistic", "behaviour"}
+    assert set(body["blocks"]) == set(ALL_BLOCKS)
     assert body["calibration"] == "sigmoid"
 
 

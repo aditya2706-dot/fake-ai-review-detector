@@ -87,7 +87,9 @@ def main() -> None:
             print(f"    \"{row.text[:88]}...\"")
         print("\n  These are the lone-wolf and high-effort fakes: specific text,")
         print("  no burst, no template reuse. Behavioural features cannot see them.")
-        print("  Catching these needs graph structure (ROADMAP phase 7).")
+        print("  Graph features were built for exactly this and do not catch them")
+        print("  either -- a lone wolf has no co-review structure by definition.")
+        print("  See ROADMAP phase 7 for what measuring that actually produced.")
     else:
         print("  nothing missed at this threshold")
 

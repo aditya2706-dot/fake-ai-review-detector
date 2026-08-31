@@ -46,14 +46,15 @@ from sklearn.pipeline import FeatureUnion, Pipeline
 
 from ..config import CONFIG, Config
 from ..features.behavior import BEHAVIOUR_COLUMNS, build_behaviour_features
+from ..features.graph import GRAPH_COLUMNS, build_graph_features
 from ..features.text import (
     LINGUISTIC_COLUMNS, LinguisticFeatures, TextColumnSelector,
     make_char_vectorizer, make_word_vectorizer,
 )
 from ..schema import LABEL, PRODUCT_ID, TIMESTAMP
 
-Block = Literal["text", "linguistic", "behaviour"]
-ALL_BLOCKS: tuple[Block, ...] = ("text", "linguistic", "behaviour")
+Block = Literal["text", "linguistic", "behaviour", "graph"]
+ALL_BLOCKS: tuple[Block, ...] = ("text", "linguistic", "behaviour", "graph")
 
 
 class ColumnSubset(BaseEstimator, TransformerMixin):
@@ -177,6 +178,8 @@ class FakeReviewDetector:
             cols += [c for c in LINGUISTIC_COLUMNS if c in X.columns]
         if "behaviour" in self.blocks:
             cols += [c for c in BEHAVIOUR_COLUMNS if c in X.columns]
+        if "graph" in self.blocks:
+            cols += [c for c in GRAPH_COLUMNS if c in X.columns]
         return cols
 
     def _ensure_columns(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -196,7 +199,11 @@ class FakeReviewDetector:
             "behaviour" in self.blocks
             and not any(c in X.columns for c in BEHAVIOUR_COLUMNS)
         )
-        if not (need_ling or need_beh):
+        need_graph = (
+            "graph" in self.blocks
+            and not any(c in X.columns for c in GRAPH_COLUMNS)
+        )
+        if not (need_ling or need_beh or need_graph):
             return X
 
         additions: list[pd.DataFrame] = []
@@ -205,16 +212,21 @@ class FakeReviewDetector:
                 LinguisticFeatures().transform(X),
                 columns=LINGUISTIC_COLUMNS, index=X.index,
             ))
-        if need_beh:
-            # Behavioural features need chronological order; restore the
-            # caller's row order afterwards so scores line up with input rows.
+        if need_beh or need_graph:
+            # Both blocks need chronological order; restore the caller's row
+            # order afterwards so scores line up with input rows.
             ts = pd.to_datetime(X[TIMESTAMP], utc=True)
-            if ts.is_monotonic_increasing:
-                additions.append(build_behaviour_features(X))
-            else:
-                order = ts.sort_values(kind="mergesort").index
-                beh = build_behaviour_features(X.loc[order])
-                additions.append(beh.reindex(X.index))
+            ordered = ts.is_monotonic_increasing
+            order = None if ordered else ts.sort_values(kind="mergesort").index
+            source = X if ordered else X.loc[order]
+            for needed, build in (
+                (need_beh, build_behaviour_features),
+                (need_graph, build_graph_features),
+            ):
+                if not needed:
+                    continue
+                block = build(source)
+                additions.append(block if ordered else block.reindex(X.index))
         return pd.concat([X, *additions], axis=1)
 
     def _stage_b_matrix(

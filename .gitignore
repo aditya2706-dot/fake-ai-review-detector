@@ -16,7 +16,7 @@ artifacts/reports/*
 artifacts/figures/*
 !artifacts/**/.gitkeep
 # ...except the figure the README embeds.
-!artifacts/figures/eval_full_fusion.png
+!artifacts/figures/eval_full_fusion_plus_graph.png
 
 # setuptools editable-install metadata
 src/*.egg-info/

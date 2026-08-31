@@ -61,6 +61,18 @@ REASON_TEMPLATES: dict[str, str] = {
     "lx_verified": "Not a verified purchase",
     "lx_rating_is_extreme": "Extreme (1 or 5 star) rating",
     "text_score": "Wording resembles known paid-review text (text model score {v:.2f})",
+    # Graph evidence is about the company an account keeps, so these sentences
+    # name another account or a group. That makes them the most consequential
+    # reasons in the list for an appeal -- and the ones most in need of the
+    # guards below, since "linked to 2 other accounts" on a marketplace where
+    # everyone buys the same kettle is not evidence of anything.
+    "gp_strong_partner_count": "Author's review history substantially overlaps {v:.0f} other account(s)",
+    "gp_max_partner_jaccard": "{v:.0%} of this author's products were also reviewed by one single other account",
+    "gp_partner_concentration": "Author's overlap with others is concentrated in one account ({v:.0%} of it)",
+    "gp_component_size": "Author belongs to a cluster of {v:.0f} tightly linked accounts",
+    "gp_tie_to_product_share": "Author has previously co-reviewed with {v:.0%} of this product's recent reviewers",
+    "gp_cohort_strong_pair_density": "{v:.0%} of this product's recent reviewer pairs have reviewed together before",
+    "gp_tight_cooccur_max": "Author has posted within 48 hours of the same account {v:.0f} times",
 }
 
 
@@ -96,6 +108,16 @@ REASON_GUARDS: dict[str, tuple[str, float]] = {
     "rv_tenure_days": ("max", 30),
     "rv_hours_since_prev": ("max", 6),
     "rv_category_entropy": ("min", 1.5),
+    # Deliberately strict. One shared product is the base rate of any
+    # marketplace, and an accusation of coordination is the hardest kind for a
+    # customer to rebut, so these only speak when the structure is unambiguous.
+    "gp_strong_partner_count": ("min", 2),
+    "gp_max_partner_jaccard": ("min", 0.35),
+    "gp_partner_concentration": ("min", 0.5),
+    "gp_component_size": ("min", 4),
+    "gp_tie_to_product_share": ("min", 0.3),
+    "gp_cohort_strong_pair_density": ("min", 0.2),
+    "gp_tight_cooccur_max": ("min", 3),
 }
 
 

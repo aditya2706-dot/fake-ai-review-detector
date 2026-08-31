@@ -29,6 +29,8 @@ class SynthConfig:
     n_reviews: int = 40_000
     fake_ratio: float = 0.18          # realistic marketplace incidence
     n_campaigns: int = 70             # coordinated paid-review pushes
+    n_farms: int = 8                  # distinct farm operations behind them
+    farm_cover_ratio: float = 0.35    # cover reviews per paid review
     days: int = 540
     seed: int = RANDOM_SEED
 

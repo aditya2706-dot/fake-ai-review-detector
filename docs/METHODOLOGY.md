@@ -61,7 +61,7 @@ The system emits **three tiers**, not a binary verdict:
 
 ---
 
-## 3. Leakage: the two mistakes that would invalidate everything
+## 3. Leakage: the mistakes that would invalidate everything
 
 ### 3.1 Temporal leakage in behavioural features
 
@@ -100,7 +100,32 @@ reported instead:
   model that looks strong temporally but collapses here is a blocklist wearing a
   model's clothes.
 
-### 3.3 Negative controls
+### 3.3 Leakage through a graph embedding
+
+`docs/ROADMAP.md` originally proposed node2vec or GNN embeddings for phase 7.
+Taken literally that is temporal leakage of exactly the kind §3.1 forbids, in a
+form far harder to notice.
+
+An embedding is fitted to a graph. Fit it to the graph built from the whole
+corpus and every node vector summarises all the edges that account will ever
+have, including next March's. Attach that vector to a January review and the row
+carries its own future. It is the whole-dataset reviewer average again — except
+laundered through 128 dimensions of matrix factorisation, where no reviewer will
+spot it and no unit test written in the obvious way will catch it.
+
+Computing it honestly means re-embedding the graph as it stood at row *i*, for
+every *i*, which nothing can afford. `features/graph.py` therefore uses graph
+statistics that can be maintained incrementally in one chronological pass —
+neighbourhood overlap, union-find components, cohort density — and submits them
+to the same truncation proof as the behavioural block
+(`tests/test_graph.py`).
+
+Embeddings remain reachable without breaking the rule: fit them on periodic
+snapshots, each trained only on data before its cutoff, and serve each review
+the most recent snapshot that predates it. That is a feature-store project
+rather than a function, which is why it is not in the repository.
+
+### 3.4 Negative controls
 
 `tests/test_leakage.py` asserts the pipeline *cannot* find signal that does not
 exist: shuffled labels must collapse PR-AUC to the base rate, and identifier
@@ -173,7 +198,63 @@ been measured. `data/synth.py` therefore fights itself deliberately:
 - **2% label noise**, because real ground truth comes from human moderators who
   are themselves wrong sometimes.
 
+- farms are **organisations with reusable account rosters**, and farm accounts
+  post **genuine cover reviews**. Both were added when the graph block went in;
+  see below.
+
 The result lands in a realistic band rather than a suspicious 0.99.
+
+### 5.1 What building the graph block revealed about the generator
+
+Adding `features/graph.py` meant asking, for the first time, whether the
+simulated marketplace contained any coordinated structure to find. It did not,
+and finding that out changed the generator and every headline number in this
+project. The sequence is worth recording, because the temptation it presented
+is the one this whole document exists to resist.
+
+**Measurement first.** In the corpus as originally generated, pairs of farm
+accounts co-reviewed two or more products *less* often than pairs of genuine
+accounts did — 0.8% against 6.8%. The farm side of the graph was **sparser**
+than the honest side. Every graph feature duly came out anti-correlated with
+fraud (AUC ≈ 0.36), and the block contributed +0.004 / −0.003 PR-AUC.
+
+**Two causes, both defects in the simulation, not the features:**
+
+1. *No rosters.* Each campaign drew its workers independently from one flat
+   pool of 1,200 accounts. With 70 campaigns, no two accounts ever
+   persistently associated. The generator's own comment claimed "farm accounts
+   are reused across campaigns — that reuse is signal"; measurement said it was
+   not. Real farms hold a roster of aged accounts and work it job after job,
+   because the accounts are the expensive asset.
+2. *No cover traffic.* Farm accounts posted nothing but paid reviews, so **98%
+   of rows written by an F-account were fake**. The account id was very nearly
+   the label. Any feature that effectively identified the account — a graph
+   feature above all — would have scored brilliantly for a reason that does not
+   exist on a real marketplace.
+
+**The trap.** Fixing a generator so that a feature you have just written starts
+to work is indistinguishable, from the outside, from tuning the data until you
+like the answer. Two things keep it honest here, and neither is optional:
+
+- the changes are defensible *without reference to the graph block*. Farms
+  being organisations, and fraudulent accounts building cover, are properties
+  of the real world. Cover traffic in particular makes the task **harder**, by
+  removing an oracle the model was free to exploit;
+- **both sets of numbers are published.** The before column below is the run on
+  the original generator. Nothing is quietly restated.
+
+| Temporal split, test PR-AUC | Flat pool, no cover | Rosters + cover |
+|---|---|---|
+| `text_only` | 0.837 | 0.813 |
+| `behaviour_only` | 0.911 | 0.887 |
+| `graph_only` | 0.507 | 0.526 |
+| `full_fusion` | 0.923 | 0.910 |
+| `full_fusion_plus_graph` | 0.920 | 0.914 |
+
+Every number fell except the two involving graph features. That is the shape a
+removed oracle produces, and it is the reason the headline in `README.md` is
+now 0.914 rather than 0.923. **The old number was better because the old data
+was easier, not because the old model was.**
 
 **What synthetic data can and cannot tell you.** It validates that the pipeline
 is correct, the features are causal, the architecture fuses signal, and the
@@ -186,10 +267,20 @@ re-measurement on labelled production data is step one of deployment.
 
 ## 6. Known limitations
 
-1. **Single-review scoring is the weak case.** With no author or product
-   history, behavioural features degrade to sentinels and only text remains.
-   The `reviewer_history=0 (cold)` slice quantifies this. Graph-level detection
-   (below) is the real answer.
+1. **Single-review scoring is the weak case, and graph features do not fix
+   it.** With no author or product history, behavioural features degrade to
+   sentinels and only text remains; the `reviewer_history=0 (cold)` slice
+   quantifies it. This was supposed to be what the graph block solved — a new
+   account inside a known cluster being suspicious on arrival — and measurement
+   says it does not. The reason is structural: **an account with no history has
+   no edges either.** The graph is exactly as empty as the behavioural
+   counters, and for the same reason. What can still be read at cold start is
+   the *cohort* the review arrives into, which is why
+   `gp_cohort_strong_pair_density` and `gp_tie_to_product_share` exist; they
+   move the cold slice from 0.034 to 0.038 PR-AUC, which is nothing. Real
+   cold-start detection needs a signal that exists before the account acts at
+   all — device, payment instrument, registration fingerprint — none of which
+   is in the review schema.
 2. **Concept drift.** Fraud tactics change; a model trained on last quarter's
    campaigns decays. Needs scheduled retraining and drift monitoring.
 3. **Adversarial pressure.** Publishing which features matter tells farms what
@@ -198,6 +289,11 @@ re-measurement on labelled production data is step one of deployment.
 4. **Label quality is the ceiling.** Moderator labels are noisy and
    systematically biased toward the fakes that are easy to spot; the model
    inherits that bias.
-5. **No graph features yet.** Reviewer-product bipartite structure catches
-   farms that spread activity thinly enough to beat per-account thresholds.
-   Highest-value next addition.
+5. **The graph block earns its place narrowly.** It adds +0.004 test PR-AUC to
+   the fused model and lifts P@2% from 0.967 to 0.992, which matters for a
+   capacity-limited moderation queue and is close to nothing anywhere else. It
+   carries 5.1% of stage-B feature importance. The honest reading is that on
+   this corpus the behavioural burst features already catch the campaigns the
+   graph would catch, because a campaign *is* a burst; the graph should pay for
+   itself properly against farms that pace themselves below burst thresholds,
+   and that is a claim only real data can settle.

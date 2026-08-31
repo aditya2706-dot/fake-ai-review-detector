@@ -19,6 +19,7 @@ from . import evaluate as ev
 from .config import CONFIG, Config
 from .data.splits import Split, cold_reviewer_split, temporal_split
 from .features.behavior import BEHAVIOUR_COLUMNS, build_behaviour_features
+from .features.graph import GRAPH_COLUMNS, build_graph_features
 from .features.text import LINGUISTIC_COLUMNS, LinguisticFeatures
 from .models.pipeline import FakeReviewDetector
 from .schema import LABEL
@@ -29,8 +30,15 @@ ABLATIONS: dict[str, tuple[str, ...]] = {
     "text_only": ("text",),
     "linguistic_only": ("linguistic",),
     "behaviour_only": ("behaviour",),
+    "graph_only": ("graph",),
     "text_plus_linguistic": ("text", "linguistic"),
+    # The rung that pays for the graph block. `full_fusion` is deliberately
+    # kept as the pre-graph fusion so the marginal contribution of the graph
+    # features is a subtraction between two rows of the same table, not a
+    # comparison against a number from an older run.
     "full_fusion": ("text", "linguistic", "behaviour"),
+    "behaviour_plus_graph": ("behaviour", "graph"),
+    "full_fusion_plus_graph": ("text", "linguistic", "behaviour", "graph"),
 }
 
 
@@ -65,6 +73,12 @@ def prepare_dataset(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
               f"in {time.time() - t0:.1f}s")
 
     t0 = time.time()
+    gph = build_graph_features(df, verbose=verbose)
+    if verbose:
+        print(f"[prepare] graph block: {gph.shape[1]} cols "
+              f"in {time.time() - t0:.1f}s")
+
+    t0 = time.time()
     ling = pd.DataFrame(
         LinguisticFeatures().transform(df), columns=LINGUISTIC_COLUMNS,
         index=df.index,
@@ -73,7 +87,7 @@ def prepare_dataset(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
         print(f"[prepare] linguistic block: {ling.shape[1]} cols "
               f"in {time.time() - t0:.1f}s")
 
-    return pd.concat([df, beh, ling], axis=1)
+    return pd.concat([df, beh, gph, ling], axis=1)
 
 
 def make_split(df: pd.DataFrame, kind: str, cfg: Config = CONFIG) -> Split:
@@ -161,6 +175,7 @@ def run_all(
             "n_reviewers": int(prepared["reviewer_id"].nunique()),
             "n_products": int(prepared["product_id"].nunique()),
             "behaviour_features": len(BEHAVIOUR_COLUMNS),
+            "graph_features": len(GRAPH_COLUMNS),
             "linguistic_features": len(LINGUISTIC_COLUMNS),
         },
         "config": {

@@ -26,6 +26,11 @@ So this generator deliberately fights itself:
     nearly sufficient, and the model would miss the whole tactic
   * `label_noise` flips a small share of labels, because human moderators
     who produce real ground truth are themselves imperfect
+  * farms are organisations with reusable account ROSTERS, so the same faces
+    recur across one farm's products -- the coordinated structure that graph
+    features exist to find, and that a flat account pool does not produce
+  * farm accounts post genuine COVER reviews, so the account id is not itself
+    the label and the model has to judge the review rather than the reviewer
 
 The result is a dataset where an honest model lands in a realistic band
 (PR-AUC roughly 0.75-0.90) instead of a suspicious 0.99.
@@ -219,45 +224,42 @@ def generate(cfg: SynthConfig | None = None) -> pd.DataFrame:
     rows: list[dict] = []
     rid = 0
 
-    # ---------------- genuine traffic ----------------
-    n_fake_target = int(cfg.n_reviews * cfg.fake_ratio)
-    n_genuine = cfg.n_reviews - n_fake_target
-
-    genuine_ids = np.array([f"U{i:06d}" for i in range(cfg.n_genuine_reviewers)])
-    # Reviewer activity is also heavy-tailed: a few prolific reviewers.
-    user_weight = rng.pareto(1.6, cfg.n_genuine_reviewers) + 0.1
-    user_weight /= user_weight.sum()
-
-    g_user = rng.choice(cfg.n_genuine_reviewers, size=n_genuine, p=user_weight)
-    g_prod = rng.choice(cfg.n_products, size=n_genuine, p=prod_weight)
-    g_day = rng.uniform(0, cfg.days, size=n_genuine)
-    # J-shaped rating distribution around latent quality.
-    g_rating = np.clip(
-        np.round(rng.normal(prod_quality[g_prod], 1.05)), 1, 5
-    )
-    g_promo = rng.random(n_genuine) < 0.10   # brand loyalists
-
-    for k in range(n_genuine):
-        rating = float(g_rating[k])
-        rows.append({
-            REVIEW_ID: f"R{rid:07d}",
-            PRODUCT_ID: products[g_prod[k]],
-            REVIEWER_ID: genuine_ids[g_user[k]],
-            RATING: rating,
-            TITLE: _title(rng, rating),
-            TEXT: _genuine_text(rng, rating, bool(g_promo[k])),
-            TIMESTAMP: start + pd.Timedelta(days=float(g_day[k])),
-            VERIFIED: bool(rng.random() < 0.78),
-            HELPFUL: int(rng.poisson(1.4)),
-            CATEGORY: prod_category[g_prod[k]],
-            LABEL: 0,
-        })
-        rid += 1
-
     # ---------------- coordinated campaigns ----------------
-    # A campaign = a seller buying a burst of reviews for one product from a
-    # pool of farm accounts, within a short window, around one template.
+    # A campaign = a seller buying a burst of reviews for one product, run by
+    # a farm, within a short window, around one template.
+    #
+    # WHY FARMS HAVE ROSTERS
+    # ----------------------
+    # An earlier version of this generator drew each campaign's workers
+    # independently from one flat pool of 1,200 accounts, and commented that
+    # the reuse was signal. It was not. With that many accounts and 70 jobs,
+    # no two of them ever persistently associate: measured on the resulting
+    # corpus, farm-farm pairs shared two or more products *less* often than
+    # genuine pairs did (0.8% against 6.8%). The simulated marketplace
+    # contained no coordinated structure at all, which made the graph block of
+    # `features/graph.py` untestable -- it correctly reported that there was
+    # nothing there.
+    #
+    # Real farms are organisations. They hold a roster of aged accounts and
+    # work it job after job, because accounts are the expensive asset. So a
+    # campaign draws from one farm's roster, and the same faces keep appearing
+    # together across that farm's products. That is the structure the co-review
+    # graph exists to find, and simulating a marketplace without it was the
+    # unrealistic choice, not the other way round.
     n_camp = cfg.n_campaigns
+    n_farms = max(1, cfg.n_farms)
+    roster_sizes = rng.integers(35, 90, size=n_farms)
+    farm_rosters: list[np.ndarray] = []
+    next_account = 0
+    for f in range(n_farms):
+        ids = np.array([
+            f"F{i:05d}" for i in range(next_account, next_account + int(roster_sizes[f]))
+        ])
+        farm_rosters.append(ids)
+        next_account += int(roster_sizes[f])
+    all_farm_ids = np.concatenate(farm_rosters)
+
+    camp_farm = rng.integers(0, n_farms, size=n_camp)
     camp_prod = rng.choice(cfg.n_products, size=n_camp, p=prod_weight)
     camp_start = rng.uniform(0, cfg.days - 12, size=n_camp)
     camp_span = rng.uniform(0.5, 9.0, size=n_camp)        # burst window, days
@@ -265,13 +267,13 @@ def generate(cfg: SynthConfig | None = None) -> pd.DataFrame:
     camp_attack = rng.random(n_camp) < 0.22               # 1-star competitor hit
     camp_template = [rng.choice(GENERIC_OPENERS) for _ in range(n_camp)]
 
-    farm_ids = np.array([f"F{i:05d}" for i in range(1200)])
     fake_rows: list[dict] = []
 
     for c in range(n_camp):
-        size = int(camp_size[c])
-        # Farm accounts are reused across campaigns -- that reuse is signal.
-        workers = rng.choice(farm_ids, size=size, replace=True)
+        roster = farm_rosters[camp_farm[c]]
+        # One account does not review the same product twice for one job.
+        size = min(int(camp_size[c]), len(roster))
+        workers = rng.choice(roster, size=size, replace=False)
         for w in workers:
             attack = bool(camp_attack[c])
             sophisticated = bool(rng.random() < 0.30)
@@ -310,6 +312,7 @@ def generate(cfg: SynthConfig | None = None) -> pd.DataFrame:
 
     # Lone-wolf fakes: incentivised individuals, no campaign structure. These
     # have no burst signal at all and are the hardest positive class.
+    n_fake_target = int(cfg.n_reviews * cfg.fake_ratio)
     n_lone = max(0, n_fake_target - len(fake_rows))
     for _ in range(n_lone):
         p = int(rng.choice(cfg.n_products, p=prod_weight))
@@ -321,7 +324,7 @@ def generate(cfg: SynthConfig | None = None) -> pd.DataFrame:
         fake_rows.append({
             REVIEW_ID: f"R{rid:07d}",
             PRODUCT_ID: products[p],
-            REVIEWER_ID: str(rng.choice(farm_ids)),
+            REVIEWER_ID: str(rng.choice(all_farm_ids)),
             RATING: rating,
             TITLE: _title(rng, rating),
             TEXT: _fake_text(rng, rating, None, soph),
@@ -333,6 +336,77 @@ def generate(cfg: SynthConfig | None = None) -> pd.DataFrame:
         })
         rid += 1
 
+    # ---------------- farm cover traffic ----------------
+    # Farm accounts also post ordinary, genuine, unpaid reviews. They have to:
+    # an account whose entire history is paid work is trivially identifiable,
+    # and farms know it, so they pad rosters with real purchases and organic
+    # opinions.
+    #
+    # Omitting this was the second unrealism in the original generator, and a
+    # worse one than the flat account pool. Without cover traffic the account
+    # id IS the label -- 98% of rows written by an F-account were fake -- so
+    # any feature that effectively identified the account scored brilliantly
+    # for a reason that would not survive contact with a real marketplace.
+    # These rows are labelled 0 because they genuinely are genuine, which is
+    # what makes the problem honest: the model must judge the review, not the
+    # reviewer.
+    n_cover = int(len(fake_rows) * cfg.farm_cover_ratio)
+    cover_rows: list[dict] = []
+    for _ in range(n_cover):
+        p = int(rng.choice(cfg.n_products, p=prod_weight))
+        rating = float(np.clip(round(rng.normal(prod_quality[p], 1.05)), 1, 5))
+        cover_rows.append({
+            REVIEW_ID: f"R{rid:07d}",
+            PRODUCT_ID: products[p],
+            REVIEWER_ID: str(rng.choice(all_farm_ids)),
+            RATING: rating,
+            TITLE: _title(rng, rating),
+            TEXT: _genuine_text(rng, rating, bool(rng.random() < 0.10)),
+            TIMESTAMP: start + pd.Timedelta(days=float(rng.uniform(0, cfg.days))),
+            VERIFIED: bool(rng.random() < 0.78),
+            HELPFUL: int(rng.poisson(1.4)),
+            CATEGORY: prod_category[p],
+            LABEL: 0,
+        })
+        rid += 1
+
+    # ---------------- genuine traffic ----------------
+    # Sized last, so the corpus still totals n_reviews once the campaigns and
+    # their cover have taken their share.
+    n_genuine = max(0, cfg.n_reviews - len(fake_rows) - len(cover_rows))
+
+    genuine_ids = np.array([f"U{i:06d}" for i in range(cfg.n_genuine_reviewers)])
+    # Reviewer activity is also heavy-tailed: a few prolific reviewers.
+    user_weight = rng.pareto(1.6, cfg.n_genuine_reviewers) + 0.1
+    user_weight /= user_weight.sum()
+
+    g_user = rng.choice(cfg.n_genuine_reviewers, size=n_genuine, p=user_weight)
+    g_prod = rng.choice(cfg.n_products, size=n_genuine, p=prod_weight)
+    g_day = rng.uniform(0, cfg.days, size=n_genuine)
+    # J-shaped rating distribution around latent quality.
+    g_rating = np.clip(
+        np.round(rng.normal(prod_quality[g_prod], 1.05)), 1, 5
+    )
+    g_promo = rng.random(n_genuine) < 0.10   # brand loyalists
+
+    for k in range(n_genuine):
+        rating = float(g_rating[k])
+        rows.append({
+            REVIEW_ID: f"R{rid:07d}",
+            PRODUCT_ID: products[g_prod[k]],
+            REVIEWER_ID: genuine_ids[g_user[k]],
+            RATING: rating,
+            TITLE: _title(rng, rating),
+            TEXT: _genuine_text(rng, rating, bool(g_promo[k])),
+            TIMESTAMP: start + pd.Timedelta(days=float(g_day[k])),
+            VERIFIED: bool(rng.random() < 0.78),
+            HELPFUL: int(rng.poisson(1.4)),
+            CATEGORY: prod_category[g_prod[k]],
+            LABEL: 0,
+        })
+        rid += 1
+
+    rows.extend(cover_rows)
     rows.extend(fake_rows)
     df = pd.DataFrame(rows)
 

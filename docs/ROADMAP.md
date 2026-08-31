@@ -1,7 +1,8 @@
 # The project, in phases
 
-What is built, what it costs, and what to do next. Phases 0–5 are **done and
-runnable in this repo**; 6+ are the extension path.
+What is built, what it costs, and what to do next. Phases 0–5 and 7 are **done
+and runnable in this repo**; the rest are the extension path. Phase 7's entry
+below is kept as a record of a prediction this document got wrong.
 
 ---
 
@@ -27,7 +28,7 @@ so nothing downstream cares where the data came from.
 
 | Source | Status |
 |---|---|
-| Synthetic marketplace generator | `data/synth.py` — 40k reviews, campaigns, label noise |
+| Synthetic marketplace generator | `data/synth.py` — 40k reviews, farm rosters, cover traffic, campaigns, label noise |
 | LLM-generated fake reviews corpus | `loaders.load_llm_fake_reviews` |
 | Amazon review JSONL (unlabelled) | `loaders.load_amazon_jsonl` |
 | Any CSV/JSONL/parquet | `loaders.load_generic` with a column map |
@@ -52,6 +53,11 @@ backwards-looking, proven by `tests/test_causality.py`.
 real customers cite numbers, measurements, and comparisons ("measured 31cm not
 the 29cm listed"); paid ones produce superlative density with no detail.
 
+**18 graph** (`features/graph.py`) — co-review neighbourhood overlap normalised
+for activity and product popularity, strong-tie components, cohort cliquishness,
+temporal co-arrival. Streaming, and proven causal by `tests/test_graph.py`. See
+phase 7 for what it did and did not deliver.
+
 **Text vectorisers** — TF-IDF word (1,2) plus character (3,5). Character
 n-grams survive the paraphrasing farms use to beat duplicate filters.
 
@@ -67,8 +73,11 @@ trees over dense behavioural + linguistic features + that score. Stage A's
 training-set contribution is out-of-fold, grouped by product.
 
 Ablations are first-class: `text_only`, `linguistic_only`, `behaviour_only`,
-`text_plus_linguistic`, `full_fusion` — the only way to know whether the
-expensive behavioural machinery earns its cost.
+`graph_only`, `text_plus_linguistic`, `full_fusion`, `behaviour_plus_graph`,
+`full_fusion_plus_graph` — the only way to know whether the expensive
+behavioural and graph machinery earns its cost. `full_fusion` is deliberately
+kept as the pre-graph combination so the graph block's contribution is a
+subtraction between two rows of one table.
 
 **Most common mistake:** shipping one fused model with no ablation, so nobody
 knows which half is doing the work.
@@ -105,7 +114,7 @@ Offline metrics stay perfect while the live model quietly degrades.
 
 ---
 
-## Phase 6 — Real labelled data *(next, highest value)*
+## Phase 6 — Real labelled data *(next, and now the only thing that can settle phase 7)*
 
 Everything above is validated on simulated data. It proves the plumbing, not the
 performance. Options in descending order of value:
@@ -125,21 +134,66 @@ the finding.
 
 ---
 
-## Phase 7 — Graph features
+## Phase 7 — Graph features *(done; the prediction below was wrong)*
 
-The current model reasons about one account and one product at a time. Farms
-that spread activity thinly beat per-account thresholds. Bipartite
-reviewer↔product structure catches them:
+**What this section originally predicted:** *"Expect the largest single lift
+after real labels, especially on the cold-start slice, because a new account
+inside a known cluster is suspicious on arrival."*
 
-- Reviewer co-review graph; dense subgraph / community detection.
-- Node2vec or GNN embeddings over the bipartite graph.
-- Temporal co-occurrence: accounts that repeatedly appear together within
-  short windows.
+**What measuring it produced:** +0.004 test PR-AUC on the fused model, 5.1% of
+stage-B feature importance, and **no improvement at cold start** — the
+`reviewer_history=0` slice moved from 0.034 to 0.038, which is noise on 225
+rows. The prediction was wrong in a way that is obvious in hindsight: *an
+account with no history has no edges either.* The co-review graph is exactly as
+empty at cold start as the behavioural counters are, and for the same reason.
+"A new account inside a known cluster" presumes you can place the account in
+the cluster, which is precisely what you cannot do on its first review.
 
-Expect the largest single lift after real labels, especially on the cold-start
-slice, because a new account inside a known cluster is suspicious on arrival.
+**What was built** (`src/frd/features/graph.py`, 18 features):
 
----
+- neighbourhood overlap per partner, normalised two ways — by how much each
+  account posts (Jaccard) and by how obscure the shared products were
+  (Adamic–Adar). The normalisation is not a refinement, it is the feature:
+  counted raw, overlap measures enthusiasm and comes out *anti*-correlated with
+  fraud at AUC 0.36;
+- strong-tie components via streaming union-find, admitted at two shared
+  products and a surprise threshold, because on the raw co-review graph the
+  whole marketplace collapses into one component within a few thousand rows;
+- cohort cliquishness for the product being reviewed — are its recent reviewers
+  strangers, or have they all met before;
+- temporal co-arrival: accounts that keep landing inside the same 48-hour
+  window.
+
+**Streaming statistics, not embeddings.** This section used to say "node2vec or
+GNN embeddings". That is temporal leakage — see `docs/METHODOLOGY.md` §3.3. An
+embedding fitted to the finished graph hands every January review a summary of
+its own future. Every feature above is instead maintained incrementally in one
+chronological pass and passes the same truncation proof as the behavioural
+block. Embeddings stay reachable through periodic snapshots, each fitted only
+to data before its cutoff — a feature-store project, not a function.
+
+**It also exposed a defect in the simulator.** The graph block initially found
+nothing because the generator contained no coordinated structure: campaigns
+drew workers independently from a flat account pool, so farm pairs co-reviewed
+*less* than genuine pairs did (0.8% vs 6.8%), and farm accounts never posted
+cover reviews, making the account id 98% predictive of the label. Both are now
+fixed and both sets of numbers are published in `docs/METHODOLOGY.md` §5.1.
+Finding this was worth more than the feature block was.
+
+**Where the graph should still pay**, and what would settle it:
+
+1. **Farms that pace themselves below burst thresholds.** On this corpus a
+   campaign *is* a burst, so the behavioural features already catch what the
+   graph would. A farm posting one review per account per week defeats them and
+   leaves the co-review structure intact. The synthetic generator does not
+   currently simulate one — that, not more graph features, is the next honest
+   experiment.
+2. **The cold-reviewer split**, where `graph_only` scores 0.605 against 0.526
+   on the temporal split. Structure generalises to unseen accounts better than
+   it generalises across time, which is the one result that came out as
+   predicted.
+3. **Real labelled data** (phase 6), where farms are vastly more structured
+   than any simulation of them.
 
 ## Phase 8 — Transformer text stage
 
