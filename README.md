@@ -23,19 +23,32 @@ Review text ──▶ 46 linguistic/stylometric features ───────�
 ## Quickstart
 
 ```bash
+make up
+```
+
+That is the whole thing from a clean checkout: it creates the venv, synthesises
+the dataset, trains the model, installs the console's dependencies, and starts
+both servers. Then open <http://localhost:5173>.
+
+Each step is guarded by a file check, so `make up` on a warm tree just starts
+the servers. Only the training step is slow (a few minutes); the rest are
+seconds. `Ctrl-C` stops both servers.
+
+```bash
+make status     # what is set up, what is running
+make stop       # kill anything left on :8000 or :5173
+make help       # every target
+```
+
+Prefer to drive the steps yourself:
+
+```bash
 make setup      # venv + editable install  (macOS also: brew install libomp)
 make dataset    # synthesise 40k reviews with embedded review-farm campaigns
 make train      # 8 ablations x 2 split regimes; saves the best model
 make test       # 83 tests, including the two no-leakage proofs
-make serve      # scoring API on :8000, interactive docs at /docs
-```
-
-Or bring up the moderation console — the scoring API plus a React triage queue
-on top of it:
-
-```bash
-make web-setup  # once: npm install in web/
-make console    # API on :8000 and console on :5173
+make serve      # scoring API alone on :8000, interactive docs at /docs
+make console    # API + moderation console on :5173
 ```
 
 Score one review from the command line:

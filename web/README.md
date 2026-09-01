@@ -4,18 +4,24 @@ A triage queue for the fake-review detector. It consumes the FastAPI service in
 `src/frd/api/` — it does not reimplement any scoring, feature engineering, or
 decision policy of its own.
 
+From the repository root:
+
 ```bash
-make web-setup     # once: npm install
-make console       # API on :8000 + console on :5173
+make up            # sets up whatever is missing, then runs everything
 ```
 
-Then open <http://localhost:5173>. The first request features and scores the
-whole corpus (~20s for 40,000 reviews) and caches it; everything after that is
-served from that cache.
+Then open <http://localhost:5173>. If the project is already set up,
+`make console` starts just the two servers, and `make web-setup` / `make web`
+drive the console alone against an API you are running yourself.
 
-Needs a trained model (`make train`) and a corpus (`make dataset`). Without
-either, the console says which one is missing rather than rendering an empty
-queue.
+The first request features and scores the whole corpus (~20s for 40,000
+reviews) and caches it; everything after that is served from the cache. The
+page waits for the API rather than failing if it is still loading its model,
+which is the normal case for a second or two after `make console`.
+
+Needs a trained model (`make train`) and a corpus (`make dataset`) — `make up`
+does both. Without either, the console says which one is missing rather than
+rendering an empty queue.
 
 ## What it shows
 

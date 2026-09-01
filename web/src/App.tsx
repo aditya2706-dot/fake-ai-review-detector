@@ -18,6 +18,7 @@ export default function App() {
   const [page, setPage] = useState<QueuePage | null>(null);
   const [categories, setCategories] = useState<string[]>([]);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [waiting, setWaiting] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [window_, setWindow] = useState<"test" | "all">("test");
@@ -38,18 +39,44 @@ export default function App() {
   const [skew, setSkew] = useState<string[]>([]);
 
   // ---- initial load -------------------------------------------------------
+  //
+  // `make console` starts the API and this dev server together, and the API is
+  // much the slower of the two -- it loads a model before it binds. So the
+  // first request can arrive before there is anything to answer it, and
+  // waiting is the correct response to that, not a dead page.
+  //
+  // Only the reachability check is retried. Once /health answers, the API is
+  // up and everything it says afterwards is real: a missing corpus reports
+  // itself immediately rather than sitting behind a retry loop looking like a
+  // slow boot.
   useEffect(() => {
     let live = true;
     (async () => {
-      try {
-        const h = await api.health();
-        if (!live) return;
-        setHealth(h);
-        if (!h.model_loaded) {
-          setFatal("No model is loaded. Run `make train` and restart the API.");
-          setLoading(false);
-          return;
+      const deadline = Date.now() + 45_000;
+      let h: Health | null = null;
+
+      while (live && h === null) {
+        try {
+          h = await api.health();
+        } catch (e) {
+          if (Date.now() > deadline) {
+            if (live) { setFatal(describe(e)); setLoading(false); }
+            return;
+          }
+          if (live) setWaiting(true);
+          await new Promise((r) => setTimeout(r, 1000));
         }
+      }
+      if (!live || h === null) return;
+
+      setWaiting(false);
+      setHealth(h);
+      if (!h.model_loaded) {
+        setFatal("No model is loaded. Run `make train`, then start the API again.");
+        setLoading(false);
+        return;
+      }
+      try {
         const [s, c] = await Promise.all([api.stats("test"), api.categories()]);
         if (!live) return;
         setStats(s);
@@ -167,12 +194,16 @@ export default function App() {
   }
 
   if (!stats || threshold === null) {
-    return <div className="spinner" style={{ paddingTop: 120 }}>Scoring the corpus&hellip;
-      <div className="note" style={{ maxWidth: 420, margin: "12px auto 0", textAlign: "left" }}>
-        The first request features and scores the whole corpus (about 20 seconds
-        for 40,000 reviews). Everything after it is served from that.
+    return (
+      <div className="spinner" style={{ paddingTop: 120 }}>
+        {waiting ? "Waiting for the scoring API\u2026" : "Scoring the corpus\u2026"}
+        <div className="note" style={{ maxWidth: 420, margin: "12px auto 0", textAlign: "left" }}>
+          {waiting
+            ? "The API loads the model before it accepts requests, so it comes up a few seconds after this page does. Retrying."
+            : "The first request features and scores the whole corpus (about 20 seconds for 40,000 reviews). Everything after it is served from that."}
+        </div>
       </div>
-    </div>;
+    );
   }
 
   const approxCounts = Math.abs(threshold - stats.threshold) >= 1e-9;
