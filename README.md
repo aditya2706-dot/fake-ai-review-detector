@@ -20,35 +20,88 @@ Review text ──▶ 46 linguistic/stylometric features ───────�
 
 ---
 
-## Quickstart
+## Setup and run
+
+### Prerequisites
+
+| | Version | Notes |
+|---|---|---|
+| Python | 3.10+ | `python3 -m venv` has to work — on Debian/Ubuntu that means `apt install python3-venv` |
+| Node.js + npm | 18+ | only for the moderation console (Vite 6); the model and API need nothing from npm |
+| `make` | any | the targets are thin wrappers — [Without `make`](#without-make) has the raw commands |
+| OpenMP | optional | LightGBM links against it: macOS `brew install libomp`, Debian/Ubuntu `apt install libgomp1`. Leave it out and training falls back to scikit-learn's `HistGradientBoosting` on its own. |
+
+### The one command
 
 ```bash
+git clone https://github.com/hrithik73/fake-ai-review-detector.git
+cd fake-ai-review-detector
 make up
 ```
 
-That is the whole thing from a clean checkout: it creates the venv, synthesises
-the dataset, trains the model, installs the console's dependencies, and starts
-both servers. Then open <http://localhost:5173>.
+Then open <http://localhost:5173>.
 
-Each step is guarded by a file check, so `make up` on a warm tree just starts
-the servers. Only the training step is slow (a few minutes); the rest are
-seconds. `Ctrl-C` stops both servers.
+`make up` is the whole project from a clean checkout. Each setup step is guarded
+by a file check and runs only if it has not been done, then both servers start:
+
+| Step | What it does | Skipped when | Cost |
+|---|---|---|---|
+| `setup` | creates `.venv`, installs the package editable + dev deps, then LightGBM | `.venv/bin/python` exists | one-off download |
+| `dataset` | synthesises 40k reviews with embedded farm campaigns into `data/processed/` | `data/processed/reviews.{parquet,csv}` exists | seconds |
+| `train` | 8 ablations × 2 split regimes, saves the best to `artifacts/models/detector.joblib` | that file exists | **a few minutes** |
+| `web-setup` | `npm install` in `web/` | `web/node_modules` exists | one-off download |
+| `console` | uvicorn on `:8000` and Vite on `:5173` | — | `Ctrl-C` stops both |
+
+So `make up` on a warm tree just starts the servers. Training is the only slow
+step and it runs once.
+
+The console's first page load features and scores the whole corpus (~20s for
+40,000 reviews) and caches it; the page waits for the API rather than failing
+while that happens.
+
+### Step by step
+
+Same thing, driven by hand:
 
 ```bash
-make status     # what is set up, what is running
-make stop       # kill anything left on :8000 or :5173
+make setup      # 1. venv + editable install       (macOS also: brew install libomp)
+make dataset    # 2. synthesise 40k reviews into data/processed/
+make train      # 3. train + evaluate; writes artifacts/models/detector.joblib
+make web-setup  # 4. npm install for the console
+make console    # 5. API on :8000 + console on :5173
+```
+
+Variants worth knowing:
+
+```bash
+make train-fast # fused model, temporal split only — for quick iteration
+make serve      # scoring API alone on :8000, interactive docs at /docs
+make web        # console alone; expects an API already on :8000
+make web-build  # production bundle into web/dist
+make docker     # serving image; scoring only, model baked in
 make help       # every target
 ```
 
-Prefer to drive the steps yourself:
+### Check it worked
 
 ```bash
-make setup      # venv + editable install  (macOS also: brew install libomp)
-make dataset    # synthesise 40k reviews with embedded review-farm campaigns
-make train      # 8 ablations x 2 split regimes; saves the best model
-make test       # 83 tests, including the two no-leakage proofs
-make serve      # scoring API alone on :8000, interactive docs at /docs
-make console    # API + moderation console on :5173
+make status
+```
+
+```
+venv       yes
+dataset    data/processed/reviews.csv
+model      yes
+web deps   yes
+API :8000  running
+app :5173  running
+```
+
+```bash
+curl -s localhost:8000/health
+# {"status":"ok","model_loaded":true,"backend":"lightgbm","threshold":0.217, ...}
+
+make test      # 83 tests, including the two causality proofs and the negative controls
 ```
 
 Score one review from the command line:
@@ -56,6 +109,69 @@ Score one review from the command line:
 ```bash
 .venv/bin/python -m frd.cli.score --text "Amazing product! Best ever! Highly recommend!"
 ```
+
+```json
+{
+  "review_id": "inline-1",
+  "score": 0.8907,
+  "decision": "auto_remove",
+  "reasons": [
+    "Wording resembles known paid-review text (text model score 0.91)",
+    "Not a verified purchase",
+    "Unusually high intensifier density (16.7% of words)"
+  ],
+  "feature_contributions": [ ... ],
+  "token_contributions": [ ... ]
+}
+```
+
+### Stopping, restarting, resetting
+
+```bash
+make stop       # kill whatever is left on :8000 or :5173
+make up         # warm tree: starts both servers again, no rebuild
+make clean      # drop models, reports and figures — the next `make up` retrains
+```
+
+### Without `make`
+
+Every target is a one-liner, so nothing here needs it:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install lightgbm                 # optional; sklearn fallback if it fails
+.venv/bin/python -m frd.cli.make_dataset --source synthetic --n-reviews 40000
+.venv/bin/python -m frd.cli.train
+
+.venv/bin/uvicorn frd.api.main:app --port 8000 # terminal 1
+cd web && npm install && npm run dev           # terminal 2
+```
+
+### Configuration
+
+Defaults work with no environment set; these are the overrides.
+
+| Variable | Read by | Default |
+|---|---|---|
+| `FRD_MODEL_PATH` | API | `artifacts/models/detector.joblib` |
+| `FRD_MODEL_VERSION` | API | `dev` |
+| `FRD_DATA_PATH` | API queue | `data/processed/reviews.{parquet,csv}` |
+| `FRD_CORS_ORIGINS` | API | `http://localhost:5173,http://127.0.0.1:5173` |
+| `FRD_API_URL` | Vite dev-server proxy | `http://127.0.0.1:8000` |
+| `VITE_API_BASE` | built console bundle | `/api` |
+
+### Troubleshooting
+
+| Symptom | What it means |
+|---|---|
+| `Address already in use` on `:8000` or `:5173` | an earlier run is still up — `make stop` |
+| `make setup` fails at `python3 -m venv` | the venv module is missing (Debian/Ubuntu: `apt install python3-venv`) |
+| LightGBM import error / `libomp.dylib not found` | install OpenMP (`brew install libomp`, `apt install libgomp1`). Training without it silently uses sklearn's booster instead, but a model *already trained* with LightGBM will not load until OpenMP is there. |
+| `[dataset] parquet unavailable (...); wrote CSV` | harmless — pyarrow is not installed, so the corpus is CSV. `pip install pyarrow` if you want parquet. |
+| CLI says `no model at .../detector.joblib` | run `make train`, or point `--model` at an existing one |
+| Console reports a missing model or corpus | `make status` says which; `make train` or `make dataset` |
+| Console loads but the queue errors | the API is not up — `curl localhost:8000/health`, or use `make console`, which runs both |
 
 ---
 
@@ -314,12 +430,13 @@ screen the explanation layer was built for: curated reason codes, tiered
 actions, and an audit trail exist because a moderator has to act on a score, and
 a customer has to be able to appeal it.
 
-```
- 0.999  Recommended                                    auto-remove   is fake
-        The build quality is fantastic and the build quality is good...
-        ⚑ Wording resembles known paid-review text (text model score 0.99)
-        ⚑ Only 36% of the author's past reviews were verified purchases
-```
+![The triage queue](docs/images/console-queue.png)
+
+The left rail is the operating point: move the threshold and the queue re-tiers,
+the precision/recall pair updates, and the counts underneath say what that costs
+in moderator hours and wrong accusations. The score histogram below it is the
+same bimodal shape the evaluation figure shows — nearly all the mass under 0.05,
+the queue being the thin tail on the right.
 
 Clicking a row opens the case: the review with stage A's per-token
 contributions painted onto the text, tree-SHAP feature contributions, and the
@@ -327,6 +444,20 @@ author's and product's earlier reviews — drawn strictly from before the review
 under inspection, which is all the model was allowed to see either. A
 coordination flag a moderator cannot inspect is a coordination flag they cannot
 defend, so the evidence ships with the accusation.
+
+![A case opened for review](docs/images/console-case.png)
+
+Stage A's token contributions are painted onto the review itself (*"Great seller
+too"* is what the text model reacted to), the reason codes are ranked, and the
+tree-SHAP panel gives the exact per-feature push with each feature's raw value
+next to it — red towards fake, green towards genuine.
+
+![The author's earlier reviews](docs/images/console-evidence.png)
+
+Scrolling the case gives the moderator the evidence behind the accusation: this
+author's earlier reviews and the product's, each with its own score and label,
+and every one of them dated strictly before the review under inspection — the
+same window the model was allowed to see.
 
 The threshold slider re-tiers the queue live and prices the choice:
 
