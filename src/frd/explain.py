@@ -209,9 +209,24 @@ def _token_contributions(
     return out
 
 
+# The auto-remove tier sits a fixed margin above the queue threshold, capped so
+# that no threshold setting can make removal automatic below 0.95. Named
+# constants rather than literals because the moderation console re-tiers rows
+# client-side as its threshold slider moves: it reads these two numbers from
+# the API instead of keeping a second copy of the policy in TypeScript, which
+# is the same anti-skew argument the feature code makes.
+AUTO_REMOVE_MARGIN = 0.25
+AUTO_REMOVE_CAP = 0.95
+
+
+def auto_remove_at(threshold: float) -> float:
+    """Score at or above which removal is automatic, for a given threshold."""
+    return min(AUTO_REMOVE_CAP, threshold + AUTO_REMOVE_MARGIN)
+
+
 def _decision(score: float, threshold: float) -> str:
     """Three-tier policy. See docs/METHODOLOGY.md for why not a binary call."""
-    if score >= min(0.95, threshold + 0.25):
+    if score >= auto_remove_at(threshold):
         return "auto_remove"
     if score >= threshold:
         return "queue_for_review"

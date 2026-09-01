@@ -132,6 +132,42 @@ exist: shuffled labels must collapse PR-AUC to the base rate, and identifier
 columns must never reach the model. Without tests like these, a leakage bug
 reads as a great result.
 
+### 3.5 Skew: the same class of bug, on the serving path
+
+Leakage inflates offline metrics. Its mirror image — training/serving skew —
+leaves offline metrics untouched and quietly degrades the live model, which
+makes it harder to notice, not easier.
+
+The scoring API was built to be structurally immune: it assembles the caller's
+context plus the target review into a canonical frame and calls the *same*
+feature builders training calls, rather than reimplementing anything. Building
+the moderation console surfaced a defect in that arrangement anyway, and it is
+worth recording because the mechanism is subtle.
+
+`_assemble` built the behavioural and linguistic blocks on the combined frame,
+then masked down to the target rows. The graph block it did not build at all —
+the model's `_ensure_columns` would notice it missing and build it, using the
+same function training used. Which it did, *after* the mask, from the target
+rows alone. Every one of the 18 graph features returned its `-1.0` "no history"
+sentinel no matter how much context the caller supplied:
+
+| feature | via the API | with the same context, offline |
+|---|---|---|
+| `gp_partner_count` | 0.000 | 2.000 |
+| `gp_max_shared_products` | -1.000 | 4.000 |
+| `gp_max_partner_jaccard` | -1.000 | 1.000 |
+
+Score on that example: 0.821 against a true 0.854, at a threshold of 0.217.
+
+Two things are worth taking from it. First, "call the same function training
+called" is necessary but not sufficient — *when* it is called matters just as
+much as which function it is, and a convenience that silently fills in missing
+work is exactly where that goes wrong. Second, the skew test that was supposed
+to catch this scored a review with no context, where both paths are legitimately
+empty and therefore legitimately agree. A skew test only tests anything if there
+is something to lose: `tests/test_api.py::test_context_reaches_the_graph_block`
+now supplies context on both sides, and fails on the old code.
+
 ---
 
 ## 4. Architecture: why two stages

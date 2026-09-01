@@ -16,6 +16,7 @@ from frd.config import Config, SynthConfig
 from frd.data.splits import temporal_split
 from frd.data.synth import generate
 from frd.models.pipeline import ALL_BLOCKS, FakeReviewDetector
+from frd.schema import normalise
 from frd.train import prepare_dataset
 
 
@@ -177,5 +178,66 @@ def test_api_and_offline_scores_agree(trained, client):
 
     assert abs(api_score - offline_score) < 1e-6, (
         f"API {api_score:.6f} != offline {offline_score:.6f}: "
+        "the serving feature path has drifted from training"
+    )
+
+
+def test_context_reaches_the_graph_block(client, trained):
+    """Context must feed EVERY block, not just the behavioural one.
+
+    This is a regression test for a real defect. `_assemble` used to build the
+    behavioural and linguistic blocks on the combined context+target frame and
+    then mask down to the targets -- leaving the graph block to be built later
+    by the pipeline, from the masked frame, with the context already discarded.
+    All 18 graph features came back as their -1.0 "no history" sentinel however
+    much context the caller supplied, and the score moved by 0.03 as a result.
+
+    `test_api_and_offline_scores_agree` could not catch it: it scores with no
+    context, where both paths are legitimately empty. Skew only appears when
+    there is context to lose, so this test supplies some.
+    """
+    det, _, _ = trained
+    from frd.api.main import _assemble
+    from frd.features.graph import GRAPH_COLUMNS
+
+    target = _review(review_id="GRAPH-1", reviewer_id="U000001",
+                     product_id="P00001")
+    ctx = [{
+        "review_id": f"GC{i}",
+        # Overlapping products across a small set of accounts: the shape the
+        # graph block exists to see. A single account on a single product
+        # produces no edges and would pass this test vacuously.
+        "product_id": f"P0000{i % 4}",
+        "reviewer_id": f"U00000{i % 3}",
+        "rating": 5.0,
+        "text": "Amazing product, highly recommend to everyone!",
+        "timestamp": f"2025-05-{10 + i:02d}T10:00:00Z",
+        "category": "electronics",
+        # Spelled out in full because this dict is also fed to `normalise`
+        # directly below. Over the wire pydantic fills these defaults; here
+        # a missing column would sit as NaN beside the target's real value.
+        "title": "", "verified_purchase": False, "helpful_votes": 0,
+    } for i in range(12)]
+
+    features, n_ctx = _assemble([target], ctx)
+    assert n_ctx == 12
+
+    present = [c for c in GRAPH_COLUMNS if c in features.columns]
+    assert present == list(GRAPH_COLUMNS), (
+        "graph columns missing from the assembled frame; the pipeline will "
+        "rebuild them from the target rows alone and lose the context"
+    )
+    assert float(features["gp_partner_count"].iloc[0]) > 0, (
+        "context supplied co-reviewing accounts but the graph block saw none"
+    )
+
+    # And the full skew guarantee, this time WITH context on both sides.
+    combined = pd.DataFrame(ctx + [target])
+    offline = prepare_dataset(normalise(combined), verbose=False)
+    offline_row = offline[offline["review_id"] == "GRAPH-1"]
+    api_score = float(det.predict_proba(features)[0])
+    offline_score = float(det.predict_proba(offline_row)[0])
+    assert abs(api_score - offline_score) < 1e-6, (
+        f"API {api_score:.6f} != offline {offline_score:.6f} with context: "
         "the serving feature path has drifted from training"
     )

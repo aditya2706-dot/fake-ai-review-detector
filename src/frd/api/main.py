@@ -10,8 +10,11 @@ the live model quietly degrades.
 
 So this service does NOT reimplement anything. It assembles the supplied
 context reviews plus the target review into a small DataFrame in canonical
-schema and calls the SAME `build_behaviour_features` used in training, then
-takes the last row. Slightly wasteful, completely skew-free.
+schema, calls the SAME feature builders training used -- behavioural, graph,
+and linguistic -- and then takes the target rows. Slightly wasteful, completely
+skew-free. Note the ordering: build every block while the context rows are
+still in the frame, then mask. Masking first is what silently disabled the
+graph block once already; see `_assemble`.
 
 Run:  uvicorn frd.api.main:app --reload
 """
@@ -25,13 +28,16 @@ from typing import Any
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from ..config import MODEL_DIR
 from ..explain import explain as explain_reviews
 from ..features.behavior import BEHAVIOUR_COLUMNS, build_behaviour_features
+from ..features.graph import GRAPH_COLUMNS, build_graph_features
 from ..features.text import LINGUISTIC_COLUMNS, LinguisticFeatures
 from ..models.pipeline import FakeReviewDetector
 from ..schema import normalise
+from .queue import router as queue_router
 from .schemas import (
     BatchScoreRequest, BatchScoreResponse, HealthResponse, ScoreRequest,
     ScoreResponse,
@@ -39,6 +45,17 @@ from .schemas import (
 
 MODEL_PATH = Path(os.environ.get("FRD_MODEL_PATH", MODEL_DIR / "detector.joblib"))
 MODEL_VERSION = os.environ.get("FRD_MODEL_VERSION", "dev")
+
+# The moderation console runs on its own origin in development (Vite's dev
+# server), so the browser will not call this API without CORS. Defaults are
+# localhost-only and overridable; deliberately not "*", because this service
+# returns moderator-facing evidence about identifiable accounts.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.environ.get(
+        "FRD_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",") if o.strip()
+]
 
 STATE: dict[str, Any] = {"detector": None}
 
@@ -63,6 +80,16 @@ app = FastAPI(
     version=MODEL_VERSION,
     lifespan=lifespan,
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+app.include_router(queue_router)
 
 
 def _detector() -> FakeReviewDetector:
@@ -103,12 +130,21 @@ def _assemble(
     # than by position.
     target_ids = set(tgt["review_id"].astype(str))
 
+    # Every context-dependent block MUST be built here, on the combined frame,
+    # while the context rows are still present. The pipeline would happily
+    # build a missing block itself -- but only after this function has masked
+    # down to the target rows, by which point the context is gone and every
+    # feature falls back to its "no history" sentinel. That is exactly how the
+    # graph block was silently dead on this path: `_ensure_columns` rebuilt it
+    # from the single target row and returned -1.0 for all 18 columns however
+    # much context the caller supplied.
     beh = build_behaviour_features(df)
+    gph = build_graph_features(df)
     ling = pd.DataFrame(
         LinguisticFeatures().transform(df), columns=LINGUISTIC_COLUMNS,
         index=df.index,
     )
-    full = pd.concat([df, beh, ling], axis=1)
+    full = pd.concat([df, beh, gph, ling], axis=1)
     mask = full["review_id"].astype(str).isin(target_ids)
     return full[mask].reset_index(drop=True), int(len(df) - mask.sum())
 
@@ -204,6 +240,7 @@ def model_info() -> dict:
         "n_stage_b_features": len(det.stage_b_columns_),
         "behaviour_features": len(BEHAVIOUR_COLUMNS),
         "linguistic_features": len(LINGUISTIC_COLUMNS),
+        "graph_features": len(GRAPH_COLUMNS),
         "top_features": imp.to_dict(orient="records"),
         "fit_report": det.report_.__dict__ if det.report_ else None,
     }

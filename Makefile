@@ -2,7 +2,8 @@
 PY := .venv/bin/python
 PIP := .venv/bin/pip
 
-.PHONY: help setup dataset train train-fast score serve test lint clean docker
+.PHONY: help setup dataset train train-fast score serve test lint clean docker \
+        web-setup web console web-build
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -49,3 +50,21 @@ clean:  ## Remove artefacts and caches
 
 docker:  ## Build the serving image
 	docker build -t fake-review-detector:latest .
+
+# ---- moderation console (web/) ---------------------------------------------
+
+web-setup:  ## Install the console's npm dependencies
+	cd web && npm install
+
+web:  ## Run the console dev server on :5173 (needs `make serve` alongside)
+	cd web && npm run dev
+
+console:  ## Run API and console together; open http://localhost:5173
+	@echo "API on :8000, console on :5173. Ctrl-C stops both."
+	@trap 'kill 0' INT TERM EXIT; \
+	 .venv/bin/uvicorn frd.api.main:app --port 8000 & \
+	 (cd web && npm run dev) & \
+	 wait
+
+web-build:  ## Production build of the console into web/dist
+	cd web && npm run build

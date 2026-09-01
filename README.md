@@ -26,8 +26,16 @@ Review text ──▶ 46 linguistic/stylometric features ───────�
 make setup      # venv + editable install  (macOS also: brew install libomp)
 make dataset    # synthesise 40k reviews with embedded review-farm campaigns
 make train      # 8 ablations x 2 split regimes; saves the best model
-make test       # 82 tests, including the two no-leakage proofs
+make test       # 83 tests, including the two no-leakage proofs
 make serve      # scoring API on :8000, interactive docs at /docs
+```
+
+Or bring up the moderation console — the scoring API plus a React triage queue
+on top of it:
+
+```bash
+make web-setup  # once: npm install in web/
+make console    # API on :8000 and console on :5173
 ```
 
 Score one review from the command line:
@@ -286,6 +294,51 @@ n-grams survive them.
 
 ---
 
+## The moderation console
+
+`make console` brings up a React triage queue over the scoring API. It is the
+screen the explanation layer was built for: curated reason codes, tiered
+actions, and an audit trail exist because a moderator has to act on a score, and
+a customer has to be able to appeal it.
+
+```
+ 0.999  Recommended                                    auto-remove   is fake
+        The build quality is fantastic and the build quality is good...
+        ⚑ Wording resembles known paid-review text (text model score 0.99)
+        ⚑ Only 36% of the author's past reviews were verified purchases
+```
+
+Clicking a row opens the case: the review with stage A's per-token
+contributions painted onto the text, tree-SHAP feature contributions, and the
+author's and product's earlier reviews — drawn strictly from before the review
+under inspection, which is all the model was allowed to see either. A
+coordination flag a moderator cannot inspect is a coordination flag they cannot
+defend, so the evidence ships with the accusation.
+
+The threshold slider re-tiers the queue live and prices the choice:
+
+| threshold | precision | recall | sent to a human | wrongly flagged |
+|---|---|---|---|---|
+| 0.217 (tuned) | 87.7% | 88.2% | 1,038 | 128 |
+| 0.710 | 96.9% | 78.7% | 838 | 26 |
+
+Per 6,000 held-out reviews. Nine points of precision cost about nine points of
+recall — the trade-off is a product decision, and the console makes you look at
+it rather than inherit a default.
+
+Two deliberate choices. The queue **defaults to the held-out period**, because
+the model was fitted on the first 70% of this corpus by time and a console
+opening on memorised rows would be a demo of overfitting; `all reviews` is one
+click away and carries a banner. And the console **holds no copy of the decision
+policy** — tier cut-points come from the API, and the client's re-tiering is
+checked against the server's own answer on every page, raising a banner on
+disagreement. A TypeScript copy of the thresholds would be the training/serving
+skew argument repeated in a new language (METHODOLOGY §3.5).
+
+See `web/README.md` for configuration and what was deliberately left out.
+
+---
+
 ## Project layout
 
 ```
@@ -306,9 +359,12 @@ src/frd/
     transformer.py        optional DistilBERT stage (lazy imports)
   evaluate.py             PR-AUC, precision@k, threshold frontier, slices
   explain.py              tree-SHAP + token contributions + reason codes
-  api/                    FastAPI scoring service
+  api/
+    main.py               FastAPI scoring service (/score, /score/batch)
+    queue.py              corpus-backed moderation queue the console reads
   cli/                    make_dataset / train / score
-tests/                    82 tests incl. two causality proofs + negative controls
+tests/                    83 tests incl. two causality proofs + negative controls
+web/                      React moderation console; see web/README.md
 docs/
   METHODOLOGY.md          why each decision was made; the leakage analysis
   ROADMAP.md              the phases, what is done, what is next
