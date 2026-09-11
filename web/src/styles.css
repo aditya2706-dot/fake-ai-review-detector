@@ -266,3 +266,292 @@ mark.tok.genuine { background: rgba(63, 185, 80, 0.18); box-shadow: 0 1px 0 rgba
 .hist .b { flex: 1; background: var(--line); border-radius: 1px 1px 0 0; min-height: 1px; }
 .hist .b.over { background: var(--accent); }
 .hist-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--fg-faint); font-family: var(--mono); }
+
+/* ==========================================================================
+   STOREFRONT
+   ==========================================================================
+   The console above is an operator tool and looks like one. The shop is the
+   same data seen by a customer, so it gets a retail surface: light, roomy, and
+   quiet enough that the one loud element on the page is the rating panel.
+   Everything here is scoped under `.shop` so the two surfaces cannot bleed
+   into each other -- `.chip` in particular already means something dark.
+   -------------------------------------------------------------------------- */
+
+/* The surface switcher renders into both topbars, so it is styled globally
+   (dark, matching `.seg button`) and re-skinned inside `.shop` below. */
+.seg a {
+  padding: 5px 11px; background: none; border: none; border-right: 1px solid var(--line);
+  font-size: 12.5px; color: var(--fg-dim); text-decoration: none; display: inline-block;
+}
+.seg a:last-child { border-right: none; }
+.seg a.on { background: var(--accent); color: #fff; }
+.surface-switch { margin-right: 12px; flex: 0 0 auto; }
+
+.shop {
+  --s-bg: #f7f6f3;
+  --s-panel: #ffffff;
+  --s-line: #e4e2dc;
+  --s-line-soft: #eeece7;
+  --s-fg: #1b1a18;
+  --s-dim: #6a665f;
+  --s-faint: #9c978d;
+  --s-accent: #14504f;
+  --s-up: #1c7048;          /* rating rose once fakes were removed */
+  --s-down: #a5372a;        /* rating fell */
+  --s-star: #d69a1f;
+
+  min-height: 100vh;
+  background: var(--s-bg);
+  color: var(--s-fg);
+  font-size: 14.5px;
+}
+
+.shop .seg { border-color: var(--s-line); background: var(--s-panel); }
+.shop .seg a { color: var(--s-dim); border-right-color: var(--s-line); }
+.shop .seg a.on { background: var(--s-accent); color: #fff; }
+.shop .field {
+  background: var(--s-panel); border: 1px solid var(--s-line); color: var(--s-fg);
+  border-radius: var(--radius); padding: 6px 9px;
+}
+.shop .field:focus { border-color: var(--s-accent); outline: none; }
+.shop .ghost {
+  background: var(--s-panel); border: 1px solid var(--s-line); color: var(--s-dim);
+  border-radius: var(--radius); padding: 5px 10px; font-size: 12.5px;
+}
+.shop .ghost:hover:not(:disabled) { border-color: var(--s-faint); color: var(--s-fg); }
+.shop .spinner, .shop .empty { color: var(--s-faint); }
+.shop .banner {
+  background: #fff8e6; border: 1px solid #e6d49a; color: #6b5312;
+  border-radius: var(--radius); padding: 10px 12px; font-size: 13px;
+}
+.shop .banner.err { background: #fdf0ee; border-color: #e3b3aa; color: #8a2f22; }
+.shop .muted { color: var(--s-dim); font-size: 12.5px; }
+.shop .link {
+  background: none; border: none; padding: 0; color: var(--s-accent);
+  font-size: 13px; text-decoration: underline; text-underline-offset: 2px;
+}
+.shop code { font-family: var(--mono); font-size: 12px; background: var(--s-line-soft); padding: 1px 4px; border-radius: 3px; }
+
+/* ---------- chrome ---------- */
+
+.shop-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 24px; background: var(--s-panel);
+  border-bottom: 1px solid var(--s-line); position: sticky; top: 0; z-index: 10;
+}
+.shop .wordmark {
+  font-size: 17px; font-weight: 650; letter-spacing: -0.02em;
+  color: var(--s-fg); text-decoration: none;
+}
+.shop-head-note { font-size: 12px; color: var(--s-faint); }
+.shop-page { max-width: 1180px; margin: 0 auto; padding: 24px; }
+.shop .pager-count { font-family: var(--mono); font-size: 12px; color: var(--s-dim); }
+
+.shop-foot {
+  max-width: 1180px; margin: 12px auto 0; padding: 20px 24px 48px;
+  border-top: 1px solid var(--s-line); color: var(--s-faint); font-size: 12.5px;
+}
+.shop-foot p { margin: 0 0 8px; max-width: 76ch; line-height: 1.6; }
+
+/* ---------- the finding ---------- */
+
+.shop .finding {
+  display: grid; grid-template-columns: 1.6fr 1fr; gap: 32px; align-items: start;
+  background: var(--s-panel); border: 1px solid var(--s-line);
+  border-radius: 10px; padding: 26px 28px; margin-bottom: 28px;
+}
+.shop .finding h1 {
+  margin: 0 0 10px; font-size: 25px; line-height: 1.2;
+  letter-spacing: -0.025em; font-weight: 650;
+}
+.shop .finding p { margin: 0 0 10px; line-height: 1.6; max-width: 60ch; }
+.shop .finding-caveat { color: var(--s-dim); font-size: 13px; }
+.shop .finding-stats { margin: 0; display: grid; gap: 1px; background: var(--s-line); border: 1px solid var(--s-line); border-radius: 8px; overflow: hidden; }
+.shop .finding-stats > div { background: var(--s-panel); padding: 10px 14px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.shop .finding-stats dt { color: var(--s-dim); font-size: 12.5px; }
+.shop .finding-stats dd { margin: 0; font-family: var(--mono); font-size: 14px; font-weight: 600; }
+
+/* ---------- movers lane ---------- */
+
+.shop .lane { margin-bottom: 32px; }
+.shop .lane-head h2 { margin: 0 0 5px; font-size: 16px; font-weight: 650; letter-spacing: -0.015em; }
+.shop .lane-head p { margin: 0 0 14px; color: var(--s-dim); font-size: 13px; max-width: 78ch; line-height: 1.55; }
+.shop .lane-strip {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 232px;
+  gap: 12px; overflow-x: auto; padding-bottom: 8px;
+}
+.shop .mover {
+  display: flex; flex-direction: column; text-align: left; padding: 0;
+  background: var(--s-panel); border: 1px solid var(--s-line);
+  border-radius: 9px; overflow: hidden;
+}
+.shop .mover:hover { border-color: var(--s-faint); }
+.shop .mover-body { padding: 10px 12px 12px; }
+.shop .mover-name {
+  font-size: 13px; font-weight: 600; line-height: 1.35; margin-bottom: 7px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.shop .mover-move { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px; }
+.shop .mover-move .was { color: var(--s-faint); text-decoration: line-through; text-decoration-thickness: 1px; }
+.shop .mover-move .arrow { color: var(--s-faint); }
+.shop .mover-move .now.up { color: var(--s-up); font-weight: 600; }
+.shop .mover-move .now.down { color: var(--s-down); font-weight: 600; }
+.shop .mover-tag { margin-top: 7px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.shop .mover-tag.up { color: var(--s-up); }
+.shop .mover-tag.down { color: var(--s-down); }
+
+/* ---------- catalogue grid ---------- */
+
+.shop-toolbar {
+  display: flex; align-items: center; gap: 9px; padding: 0 0 16px;
+  border: none; background: none; flex-wrap: wrap;
+}
+.shop .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(216px, 1fr)); gap: 16px; }
+.shop .grid.stale { opacity: 0.55; }
+.shop .card {
+  display: flex; flex-direction: column; text-align: left; padding: 0;
+  background: var(--s-panel); border: 1px solid var(--s-line);
+  border-radius: 10px; overflow: hidden;
+}
+.shop .card:hover { border-color: var(--s-faint); }
+.shop .card-body { padding: 12px 13px 14px; display: flex; flex-direction: column; gap: 5px; }
+.shop .card-brand { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--s-faint); }
+.shop .card-name {
+  font-size: 13.5px; font-weight: 600; line-height: 1.35; min-height: 2.7em;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.shop .card-rating { display: flex; align-items: center; gap: 7px; }
+.shop .card-price { font-size: 15.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.shop .chip {
+  align-self: flex-start; font-size: 11px; padding: 2px 7px; border-radius: 20px;
+  font-family: inherit; border: 1px solid;
+}
+.shop .chip.up { color: var(--s-up); border-color: #b8dcc7; background: #eef7f1; }
+.shop .chip.down { color: var(--s-down); border-color: #e6c2bb; background: #fdf1ef; }
+
+/* ---------- generated product art ---------- */
+
+.shop .art { position: relative; display: grid; place-items: center; overflow: hidden; }
+.shop .art-glyph { line-height: 1; opacity: 0.5; }
+.shop .art-mark {
+  position: absolute; bottom: 7px; right: 9px; font-family: var(--mono);
+  font-size: 10.5px; letter-spacing: 0.09em; opacity: 0.65;
+}
+
+/* ---------- stars ---------- */
+
+.shop .stars { position: relative; display: inline-block; white-space: nowrap; letter-spacing: 0.5px; line-height: 1; }
+.shop .stars-bg { color: #dcd8d0; }
+.shop .stars-fg {
+  position: absolute; left: 0; top: 0; display: block;
+  overflow: hidden; color: var(--s-star);
+}
+.shop .stars.empty { color: var(--s-faint); }
+
+/* ---------- product page ---------- */
+
+.shop .crumb { display: inline-block; margin-bottom: 16px; text-transform: capitalize; }
+.shop .pdp { display: grid; grid-template-columns: 340px 1fr 340px; gap: 28px; align-items: start; }
+.shop .pdp-art { background: var(--s-panel); border: 1px solid var(--s-line); border-radius: 10px; overflow: hidden; }
+.shop .pdp-brand { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--s-faint); margin-bottom: 6px; }
+.shop .pdp-buy h1 { margin: 0 0 10px; font-size: 22px; line-height: 1.25; letter-spacing: -0.02em; font-weight: 650; }
+.shop .pdp-rating { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.shop .pdp-price { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; margin-bottom: 16px; }
+.shop .pdp-features { margin: 0 0 18px; padding-left: 18px; color: var(--s-dim); font-size: 13px; line-height: 1.75; }
+.shop .buy {
+  width: 100%; padding: 11px; border-radius: 24px; border: 1px solid var(--s-line);
+  background: var(--s-line-soft); color: var(--s-faint); font-weight: 600; cursor: not-allowed;
+}
+.shop .pdp-inert { margin: 10px 0 0; font-size: 12px; color: var(--s-faint); line-height: 1.55; }
+
+/* ---------- the trust panel ---------- */
+
+.shop .trust { background: var(--s-panel); border: 1px solid var(--s-line); border-radius: 10px; overflow: hidden; }
+.shop .trust-raw { padding: 15px 17px; border-bottom: 1px solid var(--s-line-soft); }
+.shop .trust-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--s-faint); margin-bottom: 7px; display: flex; align-items: center;
+  gap: 8px; flex-wrap: wrap;
+}
+.shop .trust-row { display: flex; align-items: baseline; gap: 9px; }
+.shop .trust-row strong { font-size: 19px; font-variant-numeric: tabular-nums; }
+.shop .trust-clean { padding: 15px 17px; }
+.shop .trust-clean.up { background: #f2f9f4; border-top: 2px solid var(--s-up); }
+.shop .trust-clean.down { background: #fdf3f1; border-top: 2px solid var(--s-down); }
+.shop .trust-clean.flat { background: var(--s-panel); }
+.shop .trust-clean .badge {
+  font-size: 10.5px; letter-spacing: 0.02em; text-transform: none;
+  padding: 2px 7px; border-radius: 20px; border: 1px solid currentColor;
+}
+.shop .trust-clean.up .badge { color: var(--s-up); }
+.shop .trust-clean.down .badge { color: var(--s-down); }
+.shop .delta { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+.shop .delta.up { color: var(--s-up); }
+.shop .delta.down { color: var(--s-down); }
+.shop .trust-note { margin: 9px 0 10px; font-size: 12.5px; color: var(--s-dim); line-height: 1.6; }
+.shop .trust-note .warn { color: #8a5a12; background: #fdf6e6; padding: 1px 4px; border-radius: 3px; }
+.shop .trust-under {
+  margin: 0; padding: 11px 17px; font-size: 12px; color: var(--s-dim);
+  background: var(--s-line-soft); border-top: 1px solid var(--s-line);
+  line-height: 1.6;
+}
+
+.shop .withheld { border-top: 1px solid var(--s-line); background: #fbfaf8; }
+.shop .withheld-head {
+  padding: 11px 17px 8px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--s-faint);
+}
+.shop .withheld-row { padding: 11px 17px; border-top: 1px solid var(--s-line-soft); }
+.shop .withheld-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 11.5px; font-family: var(--mono); color: var(--s-faint); }
+.shop .withheld-meta .score { color: var(--s-down); font-weight: 700; font-size: 12.5px; }
+.shop .withheld-title { font-size: 12.5px; font-weight: 600; margin: 5px 0 2px; }
+.shop .withheld-text { margin: 3px 0 0; font-size: 12.5px; color: var(--s-dim); line-height: 1.55; }
+.shop .reasons { margin: 7px 0 0; padding-left: 16px; font-size: 11.5px; color: var(--s-dim); line-height: 1.6; }
+.shop .withheld-foot { padding: 10px 17px 14px; margin: 0; font-size: 11.5px; color: var(--s-faint); line-height: 1.6; }
+.shop .tag-train {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 1px 5px; border-radius: 3px; border: 1px solid #d9cfae;
+  background: #fbf5e3; color: #7d6520; font-family: inherit;
+}
+.shop .tag-truth {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 1px 5px; border-radius: 3px; border: 1px solid; font-family: inherit;
+}
+.shop .tag-truth.fake { color: var(--s-down); border-color: #e0bab3; background: #fdf1ef; }
+.shop .tag-truth.genuine { color: var(--s-up); border-color: #b6d9c5; background: #eff7f2; }
+
+/* ---------- rating histogram (`rhist`, not `hist`:
+     the console sidebar's score sparkline already owns `.hist`) ---------- */
+
+.shop .rhist { display: block; margin-top: 16px; background: var(--s-panel); border: 1px solid var(--s-line); border-radius: 10px; padding: 14px 17px 12px; }
+.shop .rhist-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--s-faint); margin-bottom: 10px; display: flex; justify-content: space-between; }
+.shop .rhist-row { display: flex; align-items: center; gap: 9px; margin-bottom: 5px; }
+.shop .rhist-star { font-size: 11.5px; color: var(--s-dim); width: 22px; font-variant-numeric: tabular-nums; }
+.shop .rhist-track { position: relative; flex: 1; height: 13px; background: var(--s-line-soft); border-radius: 3px; overflow: hidden; }
+.shop .rhist-raw { position: absolute; left: 0; top: 0; height: 100%; background: #d9d5cc; }
+.shop .rhist-shown { position: absolute; left: 0; top: 0; height: 100%; background: var(--s-star); opacity: 0.85; }
+.shop .rhist-n { font-family: var(--mono); font-size: 11px; color: var(--s-faint); width: 44px; text-align: right; }
+.shop .rhist-key { display: flex; gap: 14px; margin-top: 9px; font-size: 11px; color: var(--s-faint); }
+.shop .rhist-key i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
+.shop .rhist-key .k-raw { background: #d9d5cc; }
+.shop .rhist-key .k-shown { background: var(--s-star); }
+
+/* ---------- reviews ---------- */
+
+.shop .reviews { margin-top: 34px; }
+.shop .reviews-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.shop .reviews-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.015em; }
+.shop .review { padding: 16px 0; border-top: 1px solid var(--s-line); max-width: 86ch; }
+.shop .review.flagged { border-left: 2px solid #e0c26a; padding-left: 14px; }
+.shop .review-top { display: flex; align-items: center; gap: 9px; margin-bottom: 5px; }
+.shop .review-title { font-size: 14px; }
+.shop .review-meta { display: flex; flex-wrap: wrap; gap: 11px; font-size: 11.5px; color: var(--s-faint); margin-bottom: 8px; align-items: center; }
+.shop .review-meta .verified { color: var(--s-up); font-weight: 600; }
+.shop .review-text { margin: 0; line-height: 1.65; font-size: 13.5px; color: #2f2d2a; }
+.shop .review-flag { margin-top: 8px; font-size: 11.5px; color: #7d6520; background: #fbf5e3; border-radius: 4px; padding: 6px 9px; }
+.shop .stale { opacity: 0.55; }
+
+@media (max-width: 1080px) {
+  .shop .pdp { grid-template-columns: 1fr; }
+  .shop .finding { grid-template-columns: 1fr; gap: 20px; }
+}

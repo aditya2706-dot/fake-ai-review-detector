@@ -7,6 +7,9 @@ inside six hours from accounts that each post four reviews a day is not.
 
 Runs end to end on a laptop with no data downloads: a synthetic marketplace
 generator ships with the project, and real corpora plug in through one adapter.
+One command brings up both faces of it — a **storefront** showing every rating
+with and without its suspected fakes, and a **moderation console** for triaging
+the flags.
 
 ```
 Review text ──▶ TF-IDF word+char ──▶ LogisticRegression ──▶ text_score ──┐
@@ -99,9 +102,9 @@ app :5173  running
 
 ```bash
 curl -s localhost:8000/health
-# {"status":"ok","model_loaded":true,"backend":"lightgbm","threshold":0.217, ...}
+# {"status":"ok","model_loaded":true,"backend":"lightgbm","threshold":0.278, ...}
 
-make test      # 83 tests, including the two causality proofs and the negative controls
+make test      # 100 tests, including the two causality proofs and the negative controls
 ```
 
 Score one review from the command line:
@@ -177,7 +180,7 @@ Defaults work with no environment set; these are the overrides.
 
 ## Results
 
-40,000 synthetic reviews · 19.3% inauthentic · 5,005 accounts · 888 products ·
+40,000 synthetic reviews · 19.2% inauthentic · 4,968 accounts · 888 products ·
 **temporal split** (train on the past, test on the future) · 28k train / 6k val
 / 6k test.
 
@@ -185,46 +188,64 @@ Defaults work with no environment set; these are the overrides.
 
 | Model | Features | Test PR-AUC | P@2% | Precision | Recall |
 |---|---|---|---|---|---|
-| `text_only` | TF-IDF word + char | 0.813 | 0.967 | 0.889 | 0.746 |
-| `linguistic_only` | 46 stylometric | 0.830 | 0.967 | 0.897 | 0.686 |
-| `behaviour_only` | 31 causal behavioural | **0.887** | 0.992 | 0.893 | 0.746 |
-| `graph_only` | 18 causal co-review graph | 0.526 | 0.750 | 0.750 | 0.099 |
-| `text_plus_linguistic` | both text families | 0.862 | 0.967 | 0.893 | 0.771 |
-| `full_fusion` | text + linguistic + behaviour | 0.910 | 0.967 | 0.893 | 0.877 |
-| `behaviour_plus_graph` | behaviour + graph | 0.886 | 0.983 | 0.886 | 0.741 |
-| **`full_fusion_plus_graph`** | **all four** | **0.914** | **0.992** | 0.888 | 0.878 |
+| `text_only` | TF-IDF word + char | 0.819 | 0.983 | 0.937 | 0.749 |
+| `linguistic_only` | 46 stylometric | 0.832 | 0.975 | 0.893 | 0.691 |
+| `behaviour_only` | 31 causal behavioural | **0.888** | 0.983 | 0.867 | 0.769 |
+| `graph_only` | 18 causal co-review graph | 0.550 | 0.825 | 0.875 | 0.068 |
+| `text_plus_linguistic` | both text families | 0.865 | 0.958 | 0.888 | 0.773 |
+| `full_fusion` | text + linguistic + behaviour | 0.924 | 0.992 | 0.901 | 0.878 |
+| `behaviour_plus_graph` | behaviour + graph | 0.891 | 0.992 | 0.903 | 0.732 |
+| **`full_fusion_plus_graph`** | **all four** | **0.920** | 0.983 | 0.899 | 0.878 |
 
-Random-ranking PR-AUC is 0.172, so the fused model is a **5.31× lift**;
-ROC-AUC 0.948, Brier 0.031.
+Random-ranking PR-AUC is 0.172, so the shipped model is a **5.34× lift**;
+ROC-AUC 0.958, Brier 0.029.
 
-**The finding that matters: behaviour alone (0.887) beats both text families
-combined (0.862).** *How* a review arrived carries more signal than what it
+**The shipped model is chosen on validation, not on this table.**
+`full_fusion` scores higher on test (0.924) and `full_fusion_plus_graph`
+higher on validation (0.9245 against 0.9227), and validation is what selects —
+picking among eight correlated architectures by their test score would make
+the headline a maximum over eight draws and leak test into the artifact. This
+repo previously did exactly that; see METHODOLOGY §3.6.
+
+**The finding that matters: behaviour alone (0.888) beats both text families
+combined (0.865).** *How* a review arrived carries more signal than what it
 says — which is why the causal-feature machinery exists and why the no-leakage
 proof is load-bearing. Fusion still wins, so text is not redundant; it is the
 weaker half.
 
-**The second finding: the graph block barely pays.** It adds **+0.004** PR-AUC
-to the fused model and carries 5.1% of stage-B feature importance. It does move
-P@2% from 0.967 to 0.992, which is worth having when a moderation queue can
-only absorb the top 2% of daily volume — but anyone expecting graph features to
-be transformative should read that table row again. On this corpus the
-behavioural burst features already catch the campaigns the graph would catch,
-because a campaign *is* a burst. The graph should pay for itself against farms
-that pace themselves below burst thresholds; that is a claim only real data can
-settle. `graph_only` at 0.526 is the honest measure of how little the structure
-carries on its own.
+**The second finding: the graph block's contribution is indistinguishable
+from zero.** It has now been measured four times — two corpus draws × two
+splits — and reads **−0.0002, +0.0038, +0.0018, −0.0033**. All four are inside
+0.004, and the sign is effectively random. It carries 8.8% of stage-B feature
+importance while moving the fused score by less than the gap between two
+corpus draws.
+
+That is a firmer claim than the one this section used to make ("barely pays"),
+and it came out of the sign flip: validation and test disagreed about whether
+to ship the block on *both* corpora, in opposite directions, which is how the
+selection-on-test bug above got found. An 18-feature streaming union-find that
+cannot be shown to help is a cost, and the honest reading is that on this
+corpus the behavioural burst features already catch what the graph would,
+because a campaign *is* a burst. `graph_only` at 0.550 is the measure of how
+little the structure carries alone.
+
+The block stays in the shipped model because validation prefers it, not
+because it is proven — and the thing that would settle it is a farm that paces
+itself below burst thresholds, which this generator does not yet simulate.
+See `docs/ROADMAP.md` phase 7.
 
 **And it does not fix cold start, which is what it was built for.**
 `docs/ROADMAP.md` predicted graph features would be the answer to the
-no-history slice. Measured, they move it from 0.034 to 0.038 PR-AUC — nothing.
+no-history slice. Measured, that slice sits at 0.017 PR-AUC with the graph
+block in the model — nothing.
 The reason is structural and should have been obvious in advance: **an account
 with no history has no edges either.** The graph is exactly as empty as the
 behavioural counters, for the same reason.
 
 Sanity check on the same data with a **cold-reviewer** split (no account shared
-between train and test): fused PR-AUC 0.905. Performance survives unseen
+between train and test): fused PR-AUC 0.919. Performance survives unseen
 accounts, so the model is not a memorised blocklist. The graph block does
-better here than on the temporal split (`graph_only` 0.605 against 0.526),
+better here than on the temporal split (`graph_only` 0.567 against 0.550),
 which is the one result that behaves as the roadmap predicted: structure
 generalises to accounts the model has never seen, because it describes the
 company an account keeps rather than the account itself.
@@ -235,16 +256,16 @@ Per 10,000 reviews/day, on test:
 
 | Threshold | Precision | Recall | Flagged/day | False accusations/day | Missed fakes/day |
 |---|---|---|---|---|---|
-| 0.10 | 0.776 | 0.906 | 2008 | 450 | 162 |
-| 0.15 | 0.842 | 0.893 | 1825 | 288 | 183 |
-| **0.30** | **0.916** | **0.866** | **1627** | **137** | **230** |
-| 0.50 | 0.951 | 0.835 | 1510 | 73 | 283 |
-| 0.90 | 0.977 | 0.744 | 1310 | 30 | 440 |
+| 0.10 | 0.764 | 0.909 | 2052 | 485 | 157 |
+| 0.15 | 0.834 | 0.901 | 1862 | 308 | 170 |
+| **0.30** | **0.909** | **0.875** | **1658** | **150** | **215** |
+| 0.50 | 0.953 | 0.839 | 1517 | 72 | 278 |
+| 0.90 | 0.983 | 0.733 | 1285 | 22 | 460 |
 
-Moving 0.15 → 0.30 removes 151 false accusations a day and costs 47 extra
+Moving 0.15 → 0.30 removes 158 false accusations a day and costs 45 extra
 misses. That is the trade the threshold policy exists to make explicit.
 
-Queue quality at the top is high: **P@1% = 0.983, P@2% = 0.992, P@5% = 0.980** —
+Queue quality at the top is high: **P@1% = 0.967, P@2% = 0.983, P@5% = 0.983** —
 if moderators can only review the top 5% of daily volume, essentially all of it
 is fraud.
 
@@ -252,31 +273,32 @@ is fraud.
 
 | Slice | n | Base rate | PR-AUC | Lift | Recall |
 |---|---|---|---|---|---|
-| Author has 10+ prior reviews | 3994 | 0.246 | 0.943 | 3.8× | 0.912 |
-| Author has 3–9 prior reviews | 1203 | 0.030 | 0.326 | 10.9× | 0.278 |
-| **Author has 1–2 prior reviews** | 578 | 0.014 | **0.012** | **0.9×** | **0.000** |
-| **Author has no history (cold)** | 225 | 0.027 | **0.038** | **1.4×** | **0.000** |
-| Verified purchase | 4269 | 0.084 | 0.805 | 9.6× | 0.734 |
-| Not verified | 1731 | 0.390 | 0.962 | 2.5× | 0.954 |
-| 2–3 star rating | 2002 | 0.048 | 0.571 | 11.9× | 0.521 |
+| Author has 10+ prior reviews | 4050 | 0.244 | 0.943 | 3.9× | 0.907 |
+| Author has 3–9 prior reviews | 1192 | 0.029 | 0.350 | 11.9× | 0.286 |
+| **Author has 1–2 prior reviews** | 541 | 0.011 | **0.038** | **3.4×** | **0.000** |
+| **Author has no history (cold)** | 217 | 0.014 | **0.017** | **1.3×** | **0.000** |
+| Verified purchase | 4239 | 0.083 | 0.827 | 10.0× | 0.750 |
+| Not verified | 1761 | 0.387 | 0.961 | 2.5× | 0.944 |
+| 2–3 star rating | 1982 | 0.046 | 0.605 | 13.0× | 0.543 |
 
 Read **lift**, not raw PR-AUC, across these rows — 0.33 on a 3%-positive slice
 is 11× better than random, while 0.33 on a 40%-positive slice would be worse
 than random. Three honest weaknesses:
 
 1. **Cold start is a failure, not a weakness.** With 0–2 prior reviews the
-   model recalls **nothing** at the operating threshold, and the 1–2 slice sits
-   at 0.9× lift — *worse than random ranking*. Both slices are small (225 and
-   578 rows, single-digit positives), so the exact numbers are noisy; the
-   direction is not. Graph features were supposed to fix this and do not, for
+   model recalls **nothing** at the operating threshold. Both slices are tiny
+   (217 and 541 rows, 3 and 6 positives respectively), so the exact numbers
+   are noise — on the previous corpus draw these two read 0.038 and 0.012 and
+   they now read 0.017 and 0.038, which is the range you should assume. The
+   direction is not noise: recall is 0.000 either way. Graph features were supposed to fix this and do not, for
    the reason given above: an account with no history has no edges either.
 2. **Established-looking accounts are where the volume is.** The 10+ slice
-   carries 67% of test rows and a 24.6% base rate, and the model handles it
+   carries 68% of test rows and a 24.4% base rate, and the model handles it
    well (0.943, recall 0.912) — but a farm that patiently ages its roster
    before working it is buying its way into the slice the model treats most
    confidently.
 3. **Verified fakes.** Refund-for-review schemes produce *verified* purchases;
-   PR-AUC drops from 0.962 to 0.805 when the verified badge is present.
+   PR-AUC drops from 0.961 to 0.827 when the verified badge is present.
 
 None of these are visible in the headline number, which is why the slice table
 is generated on every run.
@@ -293,7 +315,7 @@ the supplied history:
 | 8 benign prior reviews | 0.088 | 0.987 |
 | 8 prior, all 5★ unverified | 0.043 | 0.986 |
 
-A genuine first review scores **0.019 against a 0.217 threshold** — an order of
+A genuine first review scores **0.019 against a 0.278 threshold** — an order of
 magnitude clear of it — while the same account posting promotional text scores
 0.977. Text drives the decision, which is the desired behaviour, and the cold
 column is the *lowest* in the table rather than the highest.
@@ -313,10 +335,9 @@ almost perfectly, and the sophisticated lone-wolf fakes are nearly invisible.
 The average hides two very different populations, and the cliff is where one
 ends and the other begins.
 
-The calibration panel sits slightly *above* the diagonal through the middle of
-the range: in the 0.4–0.7 band the model is mildly under-confident, and the
-true fake rate is a few points higher than the score claims. Mean absolute
-calibration gap is 0.046. That direction is the safe one for this application —
+Mean absolute calibration gap is 0.064, up from 0.047 on the previous corpus
+draw — the mid-range bins hold few rows, so this number moves around between
+runs more than the headline does. That direction is the safe one for this application —
 it under-states rather than over-states the case for removing a review.
 
 
@@ -423,6 +444,72 @@ n-grams survive them.
 
 ---
 
+## The storefront
+
+The console answers a moderator's question. `make console` also serves the one a
+shopper has: **given that some of these reviews are paid, what is this product
+actually rated?** Same API, same scores, same corpus cache — the `Shop` /
+`Console` switch in the top left is the only thing that changes.
+
+![The storefront](docs/images/shop-home.png)
+
+Every listing is shown twice: as the marketplace rates it, and with the reviews
+the detector will not stand behind taken out. Across 888 products it withholds
+7,417 of 40,000 reviews (18.5%).
+
+**The honest headline is that on most products this changes nothing.** The
+median rating moves 0.008 of a star. That is not a bug and it is not hidden —
+fakes in this corpus average 3.84 stars against genuine 3.70, because 22% of
+campaigns are one-star competitor attacks and sophisticated farms deliberately
+mix in 3s and 4s to keep a rating histogram looking organic. A detector that
+moved every rating would be a detector agreeing with its own priors.
+
+Manipulation is **concentrated**, and it runs **both directions**. Of the 262
+products with enough reviews to rank, 112 move by at least 0.1 of a star: 59
+inflated by paid reviews, 53 pushed *down* by attack campaigns. That near-even
+split is why the storefront ranks by absolute change rather than by "most
+suspicious", and why the trust panel has language for a product that was
+attacked, not just one that was puffed up.
+
+![A product page](docs/images/shop-product.png)
+
+This one was buried. 46 of its 49 reviews are a competitor attack campaign;
+withholding them takes it from **★1.90 to ★4.33**, and the rating breakdown
+shows where the one-star reviews went. The panel also refuses to oversell
+it: the cleaned figure rests on the three reviews that survived, and it says so
+in the same box rather than in a footnote.
+
+Three deliberate choices, each of them a refusal:
+
+**It withholds at the auto-remove line, not the queue threshold.** The decision
+policy already draws two lines — above 0.28 a human should look, above 0.53 the
+platform will act unattended. A storefront hiding everything above the *queue*
+line would suppress at 90.9% precision with no moderator involved — one wrongly
+hidden review in eleven. Withholding at the auto-remove line instead runs at
+96.5%, one in twenty-nine: the same choice the policy already made for
+unattended removal, and it cuts the wrongful-suppression rate by more than
+half. Reviews between the two lines stay visible, marked, and go to a human
+instead.
+
+**It does not print a cleaned rating that did not change.** Below 0.1 of a star
+the panel collapses to one quiet line. "4.6 → 4.6" on the 57% of rankable
+products where nothing moved teaches shoppers to ignore the badge, which costs
+credibility on the products where it matters.
+
+**The withheld set is inspectable.** "Show what was withheld" lists the actual
+reviews with their scores and the same reason codes the moderator sees. A trust
+badge that cannot be audited is marketing.
+
+The product listings themselves — names, brands, prices, the generated art —
+are derived from the product id by `data/catalog.py`, because the review schema
+carries a `product_id` and a category and nothing else. Deriving rather than
+storing means no artifact to drift out of sync, and an unfamiliar id from a real
+corpus gets a listing on first request instead of a `KeyError`. No real brand is
+named and no image is fetched: putting a fabricated fraud score next to a real
+company's product is the kind of thing `ROADMAP.md` phase 10 exists to refuse.
+
+---
+
 ## The moderation console
 
 `make console` brings up a React triage queue over the scoring API. It is the
@@ -463,12 +550,12 @@ The threshold slider re-tiers the queue live and prices the choice:
 
 | threshold | precision | recall | sent to a human | wrongly flagged |
 |---|---|---|---|---|
-| 0.217 (tuned) | 87.7% | 88.2% | 1,038 | 128 |
-| 0.710 | 96.9% | 78.7% | 838 | 26 |
+| 0.278 (tuned) | 91.0% | 87.5% | 995 | 90 |
+| 0.710 | 97.6% | 79.8% | 845 | 20 |
 
-Per 6,000 held-out reviews. Nine points of precision cost about nine points of
-recall — the trade-off is a product decision, and the console makes you look at
-it rather than inherit a default.
+Per 6,000 held-out reviews. Seven points of precision cost about eight points
+of recall — the trade-off is a product decision, and the console makes you look
+at it rather than inherit a default.
 
 Two deliberate choices. The queue **defaults to the held-out period**, because
 the model was fitted on the first 70% of this corpus by time and a console
@@ -493,6 +580,7 @@ src/frd/
     synth.py              synthetic marketplace: farm rosters, cover traffic,
                           campaigns, label noise
     loaders.py            adapters for real corpora + coverage reporting
+    catalog.py            storefront metadata derived from product ids
     splits.py             temporal and cold-reviewer splits (no random split)
   features/
     behavior.py           31 strictly-backward-looking behavioural features
@@ -506,9 +594,10 @@ src/frd/
   api/
     main.py               FastAPI scoring service (/score, /score/batch)
     queue.py              corpus-backed moderation queue the console reads
+    storefront.py         shopper-facing catalogue: ratings with fakes withheld
   cli/                    make_dataset / train / score
-tests/                    83 tests incl. two causality proofs + negative controls
-web/                      React moderation console; see web/README.md
+tests/                    100 tests incl. causality proofs + leakage controls
+web/                      React storefront + moderation console; see web/README.md
 docs/
   METHODOLOGY.md          why each decision was made; the leakage analysis
   ROADMAP.md              the phases, what is done, what is next

@@ -108,3 +108,92 @@ export interface Health {
 
 /** A moderator's own call, held locally. See useDecisions. */
 export type ModeratorVerdict = "confirmed" | "cleared";
+
+// --- storefront (mirrors src/frd/api/storefront.py) ------------------------
+
+/** Whether cleaning moved this product's rating, and which way. */
+export type Direction = "unchanged" | "inflated" | "attacked";
+
+export interface ProductCard {
+  product_id: string;
+  name: string;
+  brand: string;
+  category: string;
+  price: number;
+  currency: string;
+  features: string[];
+  hue: number;
+  hue_shift: number;
+  glyph: string;
+
+  n_reviews: number;
+  n_shown: number;
+  n_withheld: number;
+  n_under_review: number;
+  raw_rating: number | null;
+  /** null when every review was withheld — there is no clean mean to show. */
+  adjusted_rating: number | null;
+  delta: number | null;
+  withheld_share: number | null;
+  /** False when the change is below the server's material_delta. */
+  material: boolean;
+  direction: Direction;
+  /** The cleaned rating rests on fewer survivors than the server trusts. */
+  adjusted_thin: boolean;
+  true_fake_share?: number | null;
+}
+
+export interface ShopStats {
+  counts: {
+    n_products: number;
+    n_rankable: number;
+    n_material: number;
+    n_inflated: number;
+    n_attacked: number;
+  };
+  categories: string[];
+  currency: string;
+  threshold: number;
+  auto_remove_at: number;
+  material_delta: number;
+  min_reviews_for_ranking: number;
+  min_shown_for_confidence: number;
+  n_reviews: number;
+  n_withheld: number;
+  train_period_ends: string;
+  median_delta: number | null;
+  movers: ProductCard[];
+}
+
+export interface ProductPage {
+  items: ProductCard[];
+  total: number;
+  offset: number;
+  limit: number;
+  sort: string;
+  threshold: number;
+  material_delta: number;
+  currency: string;
+}
+
+export interface ShopReview extends QueueItem {
+  /** Fitted-period reviews carry partly memorised scores. Marked, not hidden. */
+  in_train_period: boolean;
+}
+
+export interface ProductDetail {
+  product: ProductCard;
+  rating_histogram: { raw: Record<string, number>; shown: Record<string, number> };
+  reviews: ShopReview[];
+  withheld: ShopReview[];
+  total_shown: number;
+  total_withheld: number;
+  offset: number;
+  limit: number;
+  sort: string;
+  threshold: number;
+  auto_remove_at: number;
+  material_delta: number;
+  currency: string;
+  train_period_ends: string;
+}

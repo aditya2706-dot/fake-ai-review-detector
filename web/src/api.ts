@@ -1,4 +1,6 @@
-import type { Health, QueuePage, ReviewDetail, Stats } from "./types";
+import type {
+  Health, ProductDetail, ProductPage, QueuePage, ReviewDetail, ShopStats, Stats,
+} from "./types";
 
 // Vite proxies /api -> the FastAPI service (see vite.config.ts). A deployed
 // bundle can point elsewhere with VITE_API_BASE.
@@ -49,4 +51,21 @@ export const api = {
     sort: string;
     explain?: boolean;
   }) => get<QueuePage>("/queue", p),
+
+  shopStats: (threshold?: number) => get<ShopStats>("/shop/stats", { threshold }),
+  products: (p: {
+    limit: number;
+    offset: number;
+    category?: string;
+    search?: string;
+    min_reviews?: number;
+    sort: string;
+    threshold?: number;
+  }) => get<ProductPage>("/shop/products", p),
+  product: (id: string, p?: {
+    limit?: number;
+    offset?: number;
+    sort?: string;
+    threshold?: number;
+  }) => get<ProductDetail>(`/shop/products/${encodeURIComponent(id)}`, p),
 };
