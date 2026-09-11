@@ -36,6 +36,14 @@ frd-score = "frd.cli.score:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The shop's catalogue is data, not code, and `frd.data.catalog` loads it from
+# beside itself. That works by accident under an editable install (which points
+# at the source tree) and would silently break under a plain `pip install .`,
+# where the wheel ships only .py files and the catalogue would 404 the whole
+# shop. Declaring it keeps both install modes working.
+[tool.setuptools.package-data]
+"frd.data" = ["*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]

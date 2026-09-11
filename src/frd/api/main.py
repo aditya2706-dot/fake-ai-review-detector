@@ -22,6 +22,7 @@ Run:  uvicorn frd.api.main:app --reload
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from typing import Any
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from ..config import MODEL_DIR
 from ..explain import explain as explain_reviews
@@ -48,6 +50,19 @@ from .storefront import router as shop_router
 MODEL_PATH = Path(os.environ.get("FRD_MODEL_PATH", MODEL_DIR / "detector.joblib"))
 MODEL_VERSION = os.environ.get("FRD_MODEL_VERSION", "dev")
 
+# A built web bundle to serve from this same origin. Unset in development,
+# where Vite serves the app on :5173 and proxies /api here; set in the
+# container, where one origin means the session cookie needs no CORS exemption
+# at all and there is one service to deploy instead of two.
+_static = os.environ.get("FRD_STATIC_DIR", "").strip()
+STATIC_DIR = Path(_static) if _static else None
+
+# Build the scored-corpus cache at startup instead of on the first request.
+# Off by default: locally it would add ~18s to every `make serve`. On in the
+# image, where the alternative is that the first visitor after a deploy waits
+# for 40,000 reviews to be featured and scored.
+WARM_CORPUS = os.environ.get("FRD_WARM_CORPUS", "").lower() in {"1", "true", "yes"}
+
 # The moderation console runs on its own origin in development (Vite's dev
 # server), so the browser will not call this API without CORS. Defaults are
 # localhost-only and overridable; deliberately not "*", because this service
@@ -62,6 +77,28 @@ ALLOWED_ORIGINS = [
 STATE: dict[str, Any] = {"detector": None}
 
 
+def _warm_corpus() -> None:
+    """Feature and score the corpus off the startup path.
+
+    In a thread, not awaited: the platform's health check has to be able to
+    pass while this runs, or a deploy never goes live. Failures are logged and
+    swallowed -- a missing corpus makes /shop and /queue return their own 503
+    with an explanation, and killing the process over it would take /score down
+    with it for no reason.
+    """
+    from .queue import corpus   # lazy: avoids a circular import at module load
+
+    try:
+        det = STATE.get("detector")
+        if det is None:
+            return
+        store = corpus(det)
+        print(f"[api] corpus warm: {len(store['frame']):,} reviews scored "
+              f"in {store['build_seconds']}s")
+    except Exception as e:                      # noqa: BLE001
+        print(f"[api] corpus warm-up skipped: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load the model once at startup, not per request."""
@@ -71,6 +108,8 @@ async def lifespan(app: FastAPI):
     else:
         print(f"[api] WARNING no model at {MODEL_PATH}; "
               f"run `make train` first. /score will return 503.")
+    if WARM_CORPUS:
+        threading.Thread(target=_warm_corpus, name="corpus-warm", daemon=True).start()
     yield
     STATE.clear()
 
@@ -254,3 +293,22 @@ def model_info() -> dict:
         "top_features": imp.to_dict(orient="records"),
         "fit_report": det.report_.__dict__ if det.report_ else None,
     }
+
+
+# --- the web app -----------------------------------------------------------
+#
+# Mounted LAST, and that ordering is load-bearing. Starlette matches routes in
+# registration order, so a mount at "/" registered before the routers above
+# would swallow /health, /shop/*, /cart and /auth/* and serve them a 404 from
+# the static directory. Registered here, every API path is matched first and
+# the mount only sees what is left.
+#
+# `html=True` serves index.html for "/". Deep links do not need a rewrite rule
+# because the app routes on the hash (`/#/p/ferro-dutch-oven`), which the
+# server never sees -- see web/src/router.ts for why that was chosen.
+if STATIC_DIR is not None and STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="web")
+    print(f"[api] serving the web app from {STATIC_DIR}")
+elif STATIC_DIR is not None:
+    print(f"[api] WARNING FRD_STATIC_DIR={STATIC_DIR} is not a directory; "
+          f"serving the API only")

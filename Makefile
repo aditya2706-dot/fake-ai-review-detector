@@ -3,8 +3,8 @@ PY := .venv/bin/python
 PIP := .venv/bin/pip
 
 .PHONY: help up stop status setup dataset train train-fast score serve test \
-        lint clean docker web-setup web app console web-build store-reset \
-        need-venv need-data need-model need-web
+        lint clean docker deploy deploy-logs web-setup web app console \
+        web-build store-reset need-venv need-data need-model need-web
 
 help:  ## Show this list
 	@echo "Run the whole thing:  make up"
@@ -95,8 +95,29 @@ clean:  ## Remove artefacts and caches
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +
 	rm -rf .pytest_cache
 
-docker:  ## Build the serving image
-	docker build -t fake-review-detector:latest .
+docker:  ## Build the serving image (API + web app, one origin)
+	docker build -t verity-market:latest .
+
+# ---- deployment -------------------------------------------------------------
+#
+# The image copies the trained model and the corpus out of this working tree
+# rather than training them itself -- see the Dockerfile. So the one way to
+# deploy something broken is to deploy before `make up` has produced them, and
+# that is what this checks.
+
+deploy:  ## Deploy to Fly.io (needs flyctl, and `make up` to have run once)
+	@test -f artifacts/models/detector.joblib \
+	  || { echo "no trained model -- run 'make train' before deploying"; exit 1; }
+	@test -f data/processed/reviews.parquet -o -f data/processed/reviews.csv \
+	  || { echo "no corpus -- run 'make dataset' before deploying"; exit 1; }
+	@command -v flyctl >/dev/null \
+	  || { echo "flyctl not installed -- https://fly.io/docs/flyctl/install/"; exit 1; }
+	@grep -q 'app = "verity-market"' fly.toml \
+	  && echo "NOTE: fly.toml still uses the default app name; Fly app names are global." || true
+	flyctl deploy
+
+deploy-logs:  ## Tail the deployed app's logs
+	flyctl logs
 
 # ---- the web app (web/) -----------------------------------------------------
 #

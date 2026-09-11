@@ -1,0 +1,51 @@
+# Fly.io deployment.
+#
+#   fly launch --no-deploy --copy-config --name <your-app-name>
+#   fly volumes create frd_data --size 1 --region lhr
+#   make deploy
+#
+# Rename `app` below to something unique first -- Fly app names are global.
+
+app = "verity-market"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+
+  # SQLITE IS WHY THIS IS PINNED TO ONE MACHINE.
+  # The shop's accounts, baskets and orders are one SQLite file on one volume,
+  # and a Fly volume attaches to a single machine. Scaling to two would give
+  # each its own copy of the database: sign in on one, and the other has never
+  # heard of you. If this ever needs more than one machine, the store moves to
+  # Postgres first -- `frd.store.db` is the only module that would change.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    # 25s of grace: the model loads before uvicorn binds, and the corpus
+    # warm-up thread starts at the same moment. The check only needs /health,
+    # which answers before the warm-up finishes.
+    grace_period = "25s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/health"
+
+# The database. Everything else in the container is disposable and is rebuilt
+# by the image; this is the only state that has to outlive a deploy.
+[mounts]
+  source = "frd_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # Measured: 148 MB resident with all 40,000 reviews featured, scored and
+  # cached. 512 leaves room for the peak during scoring and for a second
+  # request arriving mid-warm-up.
+  memory = "512mb"
+  cpus = 1

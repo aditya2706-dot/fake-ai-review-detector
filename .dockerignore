@@ -1,0 +1,31 @@
+# Everything the image builds for itself, or does not serve.
+.git
+.gitignore
+.venv
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.py[cod]
+src/*.egg-info
+
+# The web bundle is built inside the image (stage `web`) so that it is always
+# compiled with VITE_API_BASE="" -- a bundle built for the dev proxy would call
+# /api/... against an origin that has no /api prefix.
+web/node_modules
+web/dist
+web/tsconfig.tsbuildinfo
+
+# Not served, and they are the bulk of the build context.
+docs
+tests
+examples
+artifacts/figures
+artifacts/reports
+data/raw
+
+# The shop's database belongs on the Fly volume, never baked into an image.
+data/store.db
+data/store.db-wal
+data/store.db-shm
+
+.DS_Store

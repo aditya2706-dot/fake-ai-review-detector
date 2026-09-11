@@ -646,6 +646,72 @@ docs/
 
 ---
 
+## Deploying
+
+One container, one origin. The image builds the web bundle with an empty API
+base so the app calls `/health` and `/shop/...` on its own host, and FastAPI
+mounts the built bundle after every API route — so the session cookie is
+same-site by construction and there is no CORS to configure.
+
+```bash
+make up                     # once: generates the corpus and trains the model
+fly launch --no-deploy --copy-config --name <your-app>
+fly volumes create frd_data --size 1 --region lhr
+make deploy
+```
+
+**The image does not train.** It copies `artifacts/models/detector.joblib` and
+`data/processed/reviews.csv` out of your working tree, both of which are
+gitignored and therefore absent from a clone. That is deliberate — training in
+the build would add minutes to every deploy and would ship a model that is not
+the one this README's numbers describe — and `make deploy` refuses to run
+before `make up` has produced them rather than letting you discover it from a
+503 in production.
+
+**It is pinned to one machine, and that is a real constraint.** Accounts,
+baskets and orders are one SQLite file on one Fly volume, and a volume attaches
+to a single machine. Scaling to two would give each its own database: sign in
+on one, and the other has never heard of you. `frd.store.db` is the only module
+that would have to change to move to Postgres, and that is the point at which
+it should.
+
+**Measured, not estimated:** 148 MB resident with all 40,000 reviews featured,
+scored and cached, so the 512 MB VM has real headroom. Scoring the corpus takes
+~19 s, which `FRD_WARM_CORPUS=1` moves to startup in a background thread — the
+health check passes while it runs, and the first visitor after a deploy gets a
+warm cache instead of a 19-second wait.
+
+| Variable | Set in the image to | Why |
+|---|---|---|
+| `FRD_STATIC_DIR` | `/app/web/dist` | serve the app from this origin |
+| `FRD_STORE_DB` | `/data/store.db` | the volume; a container filesystem dies with the deploy |
+| `FRD_WARM_CORPUS` | `1` | score the corpus at startup, not on the first request |
+| `FRD_SECURE_COOKIES` | `1` | correct **only** behind TLS — on plain http the browser drops the session and sign-in silently never sticks |
+
+### What has and has not been verified
+
+The application side of this configuration was tested end to end: the bundle
+served from the API's own origin, the corpus warmed at startup, and
+register → add to basket → checkout completed against it with an httpOnly
+session cookie and no CORS involved.
+
+The **Docker build and the Fly deploy have not been run** — neither `docker`
+nor `flyctl` was available on the machine this was written on. The Dockerfile
+and `fly.toml` are written against the verified configuration, but the first
+`make deploy` is the first time they execute.
+
+### Before making it public
+
+The shop puts a real email-and-password form on the internet. Passwords are
+scrypt-hashed and the session cookie is httpOnly and `SameSite=Lax`, the page
+says plainly that it is a demonstration, and the volume means those accounts
+persist — but people reuse passwords, and there is no rate limiting on
+`/auth/login` yet. A seeded demo account with a visible "sign in as demo"
+button would remove the reason for anyone to type a real password; it is not
+built.
+
+---
+
 ## Using real data
 
 ```python
