@@ -9,14 +9,18 @@ unconfirmed reviews) and no fewer (which would show reviews the platform has
 already decided to act on). That invariant is checked directly rather than
 through a model, so a policy change breaks it loudly.
 
-WORTH TESTING: that the catalogue is a function, not a lottery. Product names
-are derived from ids at request time, so a non-deterministic derivation would
-rename the whole shop on restart and make every screenshot, bookmark and bug
-report worthless.
+WORTH TESTING: that the catalogue file and the shop agree. Listings are now
+hand-authored data rather than a hash of the product id, so the failure mode
+moved: it is no longer "the names change on restart", it is "a listing
+references an image that is not in the repo" or "two listings claim the same
+slug". Those are checked directly against the file.
 
-NOT WORTH TESTING: the specific names. `product_for("P1", "toys").name ==
-"Cogsworth One Board Game"` would fail on any vocabulary edit and prove
-nothing.
+WORTH TESTING: that `assign` is stable and neutral. It picks which 61 of the
+corpus's products the shop stocks, and if that pick were unstable every URL in
+the shop would point at a different product after a restart.
+
+NOT WORTH TESTING: the copy. Asserting a description string would fail on any
+edit and prove nothing.
 """
 
 from __future__ import annotations
@@ -28,7 +32,10 @@ from fastapi.testclient import TestClient
 
 from frd.api import storefront as sf
 from frd.config import Config, SynthConfig
-from frd.data.catalog import catalog_for, product_for
+from frd.data.catalog import (
+    CATALOGUE_PATH, assign, by_slug, departments, listing_for, listings,
+    variant_for,
+)
 from frd.data.splits import temporal_split
 from frd.data.synth import generate
 from frd.explain import auto_remove_at
@@ -37,48 +44,90 @@ from frd.train import prepare_dataset
 
 # --- the catalogue ---------------------------------------------------------
 
-def test_catalog_is_deterministic():
-    """Same id in, same product out. Twice, from scratch."""
-    a = product_for("P00042", "electronics")
-    b = product_for("P00042", "electronics")
-    assert a == b
-    assert a.name and a.brand and a.price > 0
+def _corpus(n_per_category: int = 20) -> dict[str, tuple[str, int]]:
+    """A fake corpus: every department populated, with descending review counts."""
+    out: dict[str, tuple[str, int]] = {}
+    i = 0
+    for dept in departments():
+        for k in range(n_per_category):
+            out[f"P{i:05d}"] = (dept["key"], 1000 - k)
+            i += 1
+    return out
 
 
-def test_catalog_is_stable_across_processes():
-    """The seed must not come from `hash()`, which Python salts per process.
+def test_every_listing_has_an_image_in_the_repo():
+    """A listing whose photograph is missing renders as a broken box in the grid."""
+    import json
+    from pathlib import Path
 
-    Asserted against a value captured from a separate interpreter rather than
-    against a literal name, so the check survives a vocabulary edit but still
-    fails if the hash is swapped for a salted one.
+    raw = json.loads(CATALOGUE_PATH.read_text())
+    web = Path(__file__).resolve().parents[1] / "web" / "public" / "products"
+    missing = [p["slug"] for p in raw["products"]
+               if not (web / f"{p['slug']}.webp").exists()]
+    assert not missing, f"listings with no image: {missing}"
+
+
+def test_listings_are_internally_consistent():
+    items = listings()
+    assert len(items) >= 40, "the shop should look stocked"
+
+    slugs = [i["slug"] for i in items]
+    assert len(set(slugs)) == len(slugs), "duplicate slug"
+    skus = [i["sku"] for i in items]
+    assert len(set(skus)) == len(skus), "duplicate SKU"
+
+    known = {d["key"] for d in departments()}
+    for item in items:
+        assert item["category"] in known, f"{item['slug']} is in no department"
+        assert item["price"] > 0 and item["name"] and item["brand"]
+        assert item["summary"] and item["description"]
+        # Variant stock must partition the product's stock, not multiply it.
+        assert sum(v.stock for v in item["variants"]) == item["stock"]
+        assert len({v.sku for v in item["variants"]}) == len(item["variants"])
+
+
+def test_assign_is_stable_and_slug_addressable():
+    """The same corpus must produce the same shop, or every URL breaks on restart."""
+    corpus = _corpus()
+    a, b = assign(corpus), assign(dict(reversed(list(corpus.items()))))
+    assert {k: v.slug for k, v in a.items()} == {k: v.slug for k, v in b.items()}
+
+    # One listing per corpus product and one corpus product per listing.
+    assert len({p.slug for p in a.values()}) == len(a)
+    assert len(by_slug(a)) == len(a)
+    assert all(pid == p.product_id for pid, p in a.items())
+
+
+def test_assign_ranks_by_review_count_not_by_anything_scored():
+    """The busiest corpus product in a department gets that department's first listing.
+
+    The rule has to be neutral with respect to the model: ranking by
+    manipulation would stock the shop with the products that best demonstrate
+    the detector and make every headline number a selection effect.
     """
-    import subprocess
-    import sys
-
-    code = (
-        "from frd.data.catalog import product_for;"
-        "p = product_for('P00042', 'electronics');"
-        "print(p.name)"
-    )
-    out = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert out == product_for("P00042", "electronics").name
+    corpus = {"P1": ("toys", 5), "P2": ("toys", 900), "P3": ("toys", 50)}
+    got = assign(corpus)
+    first = next(i for i in listings() if i["category"] == "toys")
+    assert got["P2"].slug == first["slug"]
 
 
-def test_catalog_ids_are_distinguishable():
-    """Different products must not present as the same listing."""
-    ids = [f"P{i:05d}" for i in range(400)]
-    cats = ["electronics", "toys", "beauty", "office"] * 100
-    cat = catalog_for(ids, cats)
-    names = [p.name for p in cat.values()]
-    assert len(names) == len(set(names)), "two listings share a name"
+def test_assign_skips_departments_the_corpus_cannot_fill():
+    """A shop cannot list a product with no reviews behind it."""
+    got = assign({"P1": ("toys", 100)})
+    assert len(got) == 1
+    assert got["P1"].category == "toys"
 
 
-def test_catalog_covers_unknown_categories():
-    """A real corpus will contain a category this vocabulary has never seen."""
-    p = product_for("P00001", "farm_equipment")
-    assert p.name and p.category == "farm_equipment"
+def test_variant_lookup_is_the_pricing_path():
+    """Carts price from here, and it must not need a model or a corpus."""
+    item = next(i for i in listings() if len(i["variants"]) > 1)
+    found = variant_for(item["slug"], item["variants"][0].sku)
+    assert found is not None
+    listing, variant = found
+    assert listing["slug"] == item["slug"]
+    assert variant.price == item["price"]
+    assert variant_for(item["slug"], "NO-SUCH-SKU") is None
+    assert listing_for("no-such-product") is None
 
 
 # --- the rating arithmetic -------------------------------------------------
@@ -227,13 +276,16 @@ def client(tmp_path_factory):
 
 def test_stats_and_products_are_consistent(client):
     stats = client.get("/shop/stats").json()
-    assert stats["counts"]["n_products"] > 0
+    assert stats["counts"]["n_listed"] > 0
+    # The shop is a curated subset; conflating the two counts would let the
+    # home page imply it had checked every product in the corpus.
+    assert stats["counts"]["n_corpus_products"] >= stats["counts"]["n_listed"]
     # The policy constants are served, not duplicated in the client.
     assert stats["material_delta"] == sf.MATERIAL_DELTA
     assert stats["auto_remove_at"] == pytest.approx(auto_remove_at(stats["threshold"]))
 
     page = client.get("/shop/products", params={"limit": 5}).json()
-    assert page["total"] == stats["counts"]["n_products"]
+    assert page["total"] == stats["counts"]["n_listed"]
     assert len(page["items"]) == 5
     for item in page["items"]:
         assert item["name"] and item["price"] > 0
@@ -242,8 +294,8 @@ def test_stats_and_products_are_consistent(client):
 
 def test_product_detail_partitions_every_review(client):
     """Nothing may be dropped: shown + withheld must account for the corpus."""
-    pid = client.get("/shop/products", params={"limit": 1}).json()["items"][0]["product_id"]
-    d = client.get(f"/shop/products/{pid}", params={"limit": 100}).json()
+    slug = client.get("/shop/products", params={"limit": 1}).json()["items"][0]["slug"]
+    d = client.get(f"/shop/products/{slug}", params={"limit": 100}).json()
     assert d["total_shown"] + d["total_withheld"] == d["product"]["n_reviews"]
     assert sum(d["rating_histogram"]["raw"].values()) == d["product"]["n_reviews"]
 
@@ -266,7 +318,7 @@ def test_storefront_and_console_agree_on_a_review(client):
     """
     pid = client.get(
         "/shop/products", params={"limit": 1, "sort": "reviews"},
-    ).json()["items"][0]["product_id"]
+    ).json()["items"][0]["slug"]
     d = client.get(f"/shop/products/{pid}", params={"limit": 5}).json()
     review = (d["reviews"] or d["withheld"])[0]
 
@@ -279,7 +331,7 @@ def test_withheld_reviews_carry_reason_codes(client):
     """A withheld review with no stated reason is an unauditable accusation."""
     stats = client.get("/shop/stats").json()
     for mover in stats["movers"]:
-        d = client.get(f"/shop/products/{mover['product_id']}").json()
+        d = client.get(f"/shop/products/{mover['slug']}").json()
         if d["withheld"]:
             assert d["withheld"][0]["reasons"], "withheld review has no reasons"
             return

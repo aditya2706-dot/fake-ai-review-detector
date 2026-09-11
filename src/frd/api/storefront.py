@@ -25,7 +25,8 @@ THE THREE THINGS IT IS CAREFUL ABOUT
 2. **It does not own a second copy of the rating maths or the policy.** Tiers
    come from `frd.explain._decision`, reached through the console's
    `_row_payload` rather than reimplemented here, and scores come from the
-   corpus cache the console already built. `MATERIAL_DELTA` is served to the client rather than duplicated in
+   corpus cache the console already built. `MATERIAL_DELTA` is served to the
+   client rather than duplicated in
    TypeScript, for the same reason the console is handed `decision_policy`.
 
 3. **It reports the whole product history, and says so.** A store cannot show
@@ -56,7 +57,9 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
-from ..data.catalog import catalog_for
+from ..data.catalog import Product, assign, by_slug
+from ..data.catalog import currency as catalogue_currency
+from ..data.catalog import departments as catalogue_departments
 from ..explain import auto_remove_at
 from ..explain import explain as explain_reviews
 from ..schema import LABEL, PRODUCT_ID, TIMESTAMP
@@ -81,7 +84,6 @@ MIN_REVIEWS_FOR_RANKING = 20
 # weight as one standing on three hundred reviews, so it is flagged.
 MIN_SHOWN_FOR_CONFIDENCE = 10
 
-CURRENCY = "USD"
 
 
 def _aggregate(store: dict[str, Any], threshold: float) -> pd.DataFrame:
@@ -151,15 +153,30 @@ def _aggregate(store: dict[str, Any], threshold: float) -> pd.DataFrame:
     return agg
 
 
-def _catalog(store: dict[str, Any]) -> dict:
-    if "catalog" not in store:
+def _catalogue(store: dict[str, Any]) -> dict[str, Product]:
+    """The shop's listings, keyed by the corpus product id each one carries.
+
+    Built once per corpus and cached inside the store, so it dies with the
+    frame it was derived from. `assign` needs a review count per corpus
+    product to rank on, which is exactly the `n_reviews` column the aggregate
+    already has -- but the aggregate is per threshold and this is not, so the
+    counts are taken from the frame directly.
+    """
+    if "catalogue" not in store:
         df = store["frame"]
-        pairs = df[[PRODUCT_ID, "category"]].drop_duplicates(PRODUCT_ID)
-        store["catalog"] = catalog_for(
-            pairs[PRODUCT_ID].astype(str), pairs["category"].astype(str),
-            currency=CURRENCY,
-        )
-    return store["catalog"]
+        counts = df.groupby(PRODUCT_ID).agg(
+            category=("category", "first"), n=(PRODUCT_ID, "size"))
+        store["catalogue"] = assign({
+            str(pid): (str(row.category), int(row.n))
+            for pid, row in counts.iterrows()
+        })
+        store["by_slug"] = by_slug(store["catalogue"])
+    return store["catalogue"]
+
+
+def _stocked(store: dict[str, Any]) -> pd.Index:
+    """The corpus product ids the shop actually lists."""
+    return pd.Index(sorted(_catalogue(store).keys()))
 
 
 def _f(v: Any, digits: int = 2) -> float | None:
@@ -169,9 +186,9 @@ def _f(v: Any, digits: int = 2) -> float | None:
     return round(float(v), digits)
 
 
-def _card(pid: str, row: pd.Series, catalog: dict) -> dict[str, Any]:
-    prod = catalog[pid]
-    out = prod.to_dict()
+def _card(pid: str, row: pd.Series, catalogue: dict[str, Product]) -> dict[str, Any]:
+    """One product as the storefront shows it: the listing plus what cleaning did."""
+    out = catalogue[pid].to_dict()
     out.update({
         "n_reviews": int(row["n_reviews"]),
         "n_shown": int(row["n_shown"]),
@@ -194,27 +211,47 @@ def _threshold(det, threshold: float | None) -> float:
     return det.threshold_ if threshold is None else float(threshold)
 
 
+def _store():
+    """Detector, corpus store and catalogue: every endpoint here wants all three."""
+    from .main import _detector
+
+    det = _detector()
+    store = corpus(det)
+    _catalogue(store)                      # populates store["by_slug"] too
+    return det, store
+
+
+@router.get("/departments")
+def departments() -> dict[str, Any]:
+    """The shop's navigation. Static catalogue data -- no corpus needed."""
+    return {"departments": catalogue_departments(), "currency": catalogue_currency()}
+
+
 @router.get("/stats")
 def stats(threshold: float | None = Query(None, ge=0.0, le=1.0)) -> dict[str, Any]:
     """Catalogue-wide facts, plus the products where cleaning changes the answer.
 
     `movers` is the demo: ranked by absolute rating change, both directions,
-    restricted to products with enough reviews for the mean to mean anything.
-    """
-    from .main import _detector  # noqa: PLC0415  (avoids a circular import)
+    restricted to listings with enough reviews for the mean to mean anything.
 
-    det = _detector()
-    store = corpus(det)
+    Note the two product counts. `n_listed` is the shop; `n_corpus_products` is
+    everything the detector scored. They differ because the shop is a curated
+    subset (see `frd.data.catalog.assign`), and conflating them would let the
+    home page imply it had checked 888 products when it lists 61.
+    """
+    det, store = _store()
     thr = _threshold(det, threshold)
     agg = _aggregate(store, thr)
-    catalog = _catalog(store)
+    catalogue = _catalogue(store)
+    listed = agg.loc[_stocked(store)]
 
-    rankable = agg[agg["n_reviews"] >= MIN_REVIEWS_FOR_RANKING]
+    rankable = listed[listed["n_reviews"] >= MIN_REVIEWS_FOR_RANKING]
     order = rankable["delta"].abs().sort_values(ascending=False, kind="mergesort")
-    movers = [_card(pid, rankable.loc[pid], catalog) for pid in order.index[:12]]
+    movers = [_card(pid, rankable.loc[pid], catalogue) for pid in order.index[:8]]
 
     counts = {
-        "n_products": len(agg),
+        "n_listed": len(listed),
+        "n_corpus_products": len(agg),
         "n_rankable": len(rankable),
         "n_material": int(rankable["material"].sum()),
         "n_inflated": int((rankable["direction"] == "inflated").sum()),
@@ -223,8 +260,8 @@ def stats(threshold: float | None = Query(None, ge=0.0, le=1.0)) -> dict[str, An
 
     return {
         "counts": counts,
-        "categories": sorted(agg["category"].dropna().unique().tolist()),
-        "currency": CURRENCY,
+        "departments": catalogue_departments(),
+        "currency": catalogue_currency(),
         "threshold": thr,
         "auto_remove_at": auto_remove_at(thr),
         # Served, not duplicated client-side -- same discipline as the
@@ -232,8 +269,8 @@ def stats(threshold: float | None = Query(None, ge=0.0, le=1.0)) -> dict[str, An
         "material_delta": MATERIAL_DELTA,
         "min_reviews_for_ranking": MIN_REVIEWS_FOR_RANKING,
         "min_shown_for_confidence": MIN_SHOWN_FOR_CONFIDENCE,
-        "n_reviews": int(agg["n_reviews"].sum()),
-        "n_withheld": int(agg["n_withheld"].sum()),
+        "n_reviews": int(listed["n_reviews"].sum()),
+        "n_withheld": int(listed["n_withheld"].sum()),
         "train_period_ends": pd.Timestamp(store["train_end"]).isoformat(),
         "median_delta": _f(rankable["delta"].median(), 4),
         "movers": movers,
@@ -246,42 +283,48 @@ def products(
     offset: int = Query(0, ge=0),
     category: str | None = None,
     search: str | None = None,
+    tag: str | None = None,
     min_reviews: int = Query(0, ge=0),
     sort: str = Query(
-        "reviews",
-        pattern="^(reviews|manipulation|rating|rating_asc|price|price_desc|name)$",
+        "featured",
+        pattern="^(featured|reviews|manipulation|rating|rating_asc|price|price_desc|name)$",
     ),
     threshold: float | None = Query(None, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
     """One page of the catalogue."""
-    from .main import _detector  # noqa: PLC0415
-
-    det = _detector()
-    store = corpus(det)
+    det, store = _store()
     thr = _threshold(det, threshold)
     agg = _aggregate(store, thr)
-    catalog = _catalog(store)
+    catalogue = _catalogue(store)
 
-    view = agg
+    view = agg.loc[_stocked(store)]
     if category:
         view = view[view["category"] == category]
     if min_reviews:
         view = view[view["n_reviews"] >= min_reviews]
+    if tag:
+        view = view.loc[[p for p in view.index if tag in catalogue[p].tags]]
     if search:
         needle = search.lower()
-        keep = [
-            pid for pid in view.index
-            if needle in catalog[pid].name.lower()
-            or needle in catalog[pid].brand.lower()
-            or needle in pid.lower()
-        ]
-        view = view.loc[keep]
+        view = view.loc[[
+            p for p in view.index
+            if needle in catalogue[p].name.lower()
+            or needle in catalogue[p].brand.lower()
+            or needle in catalogue[p].summary.lower()
+            or any(needle in t for t in catalogue[p].tags)
+        ]]
 
-    prices = pd.Series(
-        {pid: catalog[pid].price for pid in view.index}, dtype=float
-    ) if len(view) else pd.Series(dtype=float)
+    def field(fn) -> pd.Series:
+        return pd.Series({p: fn(catalogue[p]) for p in view.index}) if len(view) \
+            else pd.Series(dtype=float)
 
-    if sort == "reviews":
+    if sort == "featured":
+        # The catalogue's own order, which is department by department. It is
+        # the only sort that makes an unfiltered grid look merchandised rather
+        # than dumped, so it is the default.
+        rank = {p.product_id: i for i, p in enumerate(catalogue.values())}
+        order = field(lambda p: rank[p.product_id]).sort_values(kind="mergesort").index
+    elif sort == "reviews":
         order = view["n_reviews"].sort_values(ascending=False, kind="mergesort").index
     elif sort == "manipulation":
         rankable = view[view["n_reviews"] >= MIN_REVIEWS_FOR_RANKING]
@@ -294,17 +337,16 @@ def products(
         order = view["adjusted_rating"].sort_values(
             ascending=True, kind="mergesort", na_position="last").index
     elif sort == "price":
-        order = prices.sort_values(kind="mergesort").index
+        order = field(lambda p: p.price).sort_values(kind="mergesort").index
     elif sort == "price_desc":
-        order = prices.sort_values(ascending=False, kind="mergesort").index
+        order = field(lambda p: p.price).sort_values(
+            ascending=False, kind="mergesort").index
     else:
-        order = pd.Series(
-            {pid: catalog[pid].name for pid in view.index}, dtype=object
-        ).sort_values(kind="mergesort").index
+        order = field(lambda p: p.name).sort_values(kind="mergesort").index
 
     total = len(order)
     page = order[offset:offset + limit]
-    items = [_card(pid, view.loc[pid], catalog) for pid in page]
+    items = [_card(pid, view.loc[pid], catalogue) for pid in page]
 
     return {
         "items": items,
@@ -314,7 +356,7 @@ def products(
         "sort": sort,
         "threshold": thr,
         "material_delta": MATERIAL_DELTA,
-        "currency": CURRENCY,
+        "currency": catalogue_currency(),
     }
 
 
@@ -332,32 +374,35 @@ def _reviews_payload(
     return items
 
 
-@router.get("/products/{product_id}")
+@router.get("/products/{slug}")
 def product_detail(
-    product_id: str,
-    limit: int = Query(20, ge=1, le=100),
+    slug: str,
+    limit: int = Query(8, ge=1, le=100),
     offset: int = Query(0, ge=0),
     withheld_limit: int = Query(12, ge=0, le=50),
     sort: str = Query("helpful", pattern="^(helpful|newest|oldest|rating|rating_asc)$"),
     threshold: float | None = Query(None, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
-    """A product page: catalogue metadata, the rating both ways, and the reviews.
+    """A product page: the listing, the rating both ways, and the reviews.
+
+    Addressed by slug rather than by corpus id, because `/p/ferro-dutch-oven`
+    is a URL a shop can publish and `/p/P00782` is an internal identifier that
+    happens to be routable. The corpus id stays in the payload -- the console
+    links back to it.
 
     `reviews` is what a shopper sees. `withheld` is the audit trail for the
     "why?" panel -- the reviews this page is not showing, with the moderator
     reason codes attached, so the claim is inspectable rather than asserted.
     """
-    from .main import _detector  # noqa: PLC0415
-
-    det = _detector()
-    store = corpus(det)
+    det, store = _store()
     thr = _threshold(det, threshold)
     agg = _aggregate(store, thr)
-    catalog = _catalog(store)
+    catalogue = _catalogue(store)
 
-    pid = str(product_id)
-    if pid not in agg.index:
-        raise HTTPException(status_code=404, detail=f"no product {pid} in corpus")
+    listing = store["by_slug"].get(str(slug))
+    if listing is None:
+        raise HTTPException(status_code=404, detail=f"no product {slug!r} in this shop")
+    pid = listing.product_id
 
     df = store["frame"]
     rows = df[df[PRODUCT_ID].astype(str) == pid]
@@ -385,8 +430,20 @@ def product_detail(
         counts = frame["rating"].round().astype(int).value_counts()
         return {str(star): int(counts.get(star, 0)) for star in range(5, 0, -1)}
 
+    # Same department, nearest price, never itself -- a plain related-products
+    # rule rather than anything that claims to be a recommender.
+    same = [
+        p for p in catalogue.values()
+        if p.category == listing.category and p.slug != listing.slug
+    ]
+    same.sort(key=lambda p: abs(p.price - listing.price))
+    related = [
+        _card(p.product_id, agg.loc[p.product_id], catalogue) for p in same[:4]
+    ]
+
     return {
-        "product": _card(pid, agg.loc[pid], catalog),
+        "product": _card(pid, agg.loc[pid], catalogue),
+        "related": related,
         "rating_histogram": {"raw": histogram(rows), "shown": histogram(shown)},
         "reviews": _reviews_payload(
             shown.iloc[offset:offset + limit], det, thr, train_end,
@@ -402,6 +459,6 @@ def product_detail(
         "threshold": thr,
         "auto_remove_at": remove_at,
         "material_delta": MATERIAL_DELTA,
-        "currency": CURRENCY,
+        "currency": catalogue_currency(),
         "train_period_ends": train_end.isoformat(),
     }

@@ -37,6 +37,7 @@ from ..features.graph import GRAPH_COLUMNS, build_graph_features
 from ..features.text import LINGUISTIC_COLUMNS, LinguisticFeatures
 from ..models.pipeline import FakeReviewDetector
 from ..schema import normalise
+from .commerce import auth_router, cart_router, order_router
 from .queue import router as queue_router
 from .schemas import (
     BatchScoreRequest, BatchScoreResponse, HealthResponse, ScoreRequest,
@@ -82,16 +83,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# `allow_credentials=True` is what lets the session cookie ride along on the
+# storefront's fetches. The browser refuses to pair that with `allow_origins`
+# of "*", which is exactly why the list above is explicit and localhost-only by
+# default -- a wildcard here would be both insecure and non-functional.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
 app.include_router(queue_router)
 app.include_router(shop_router)
+app.include_router(auth_router)
+app.include_router(cart_router)
+app.include_router(order_router)
 
 
 def _detector() -> FakeReviewDetector:

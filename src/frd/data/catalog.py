@@ -1,324 +1,323 @@
-"""Product catalogue: the storefront metadata the review corpus does not carry.
+"""The product catalogue: the shop's listings, and how reviews attach to them.
 
-WHY THIS FILE EXISTS
+WHAT CHANGED AND WHY
 --------------------
-The canonical review schema (`frd.schema`) has a `product_id` and a
-`category` and nothing else. That is correct -- a detector needs the review,
-the account and the timing, and inventing a product title would be inventing a
-feature. But a *storefront* cannot render `P00782`, so the shopper-facing
-surface needs a name, a brand, a price and something to look at.
+This module used to *generate* products: a blake2b hash of `P00042` picked a
+brand from a tuple, a noun from another, a price from a log-uniform band, and
+the storefront drew a CSS gradient with a category glyph where a photograph
+should be. It was defensible -- no artifact to keep in sync, works on any
+corpus -- and it read exactly like what it was. "Aurora XL Bluetooth Speaker"
+next to a lilac gradient is a schematic of a shop, not a shop.
 
-WHY IT IS DERIVED RATHER THAN STORED
-------------------------------------
-Every field here is a pure function of `(product_id, category)`, seeded by a
-stable hash of the id. That buys three things:
+So the catalogue is now hand-authored data (`products.json`): 61 listings with
+real copy, specs, variants, stock and photography. That buys the thing the
+generator could not -- a page a person believes -- at the cost of the thing it
+had, which was covering an unbounded product space for free. `assign()` below
+is where that cost is paid.
 
-1. No new artifact to keep in sync with the corpus. `data/processed/` holds
-   reviews; regenerating the corpus does not orphan a catalogue file, and a
-   catalogue file cannot drift from the reviews it describes.
-2. It works on *any* corpus, including real marketplace data, where products
-   arrive that this repo has never seen. An unknown id gets a name on first
-   request rather than a KeyError.
-3. `hashlib`, not `hash()`. Python salts `hash()` per process, so a stored
-   catalogue built with it would rename every product on restart.
+WHY THE BRANDS ARE STILL INVENTED
+---------------------------------
+Every listing here carries a fabricated review history and a fabricated
+manipulation score. Hanging those off a real company's product would attach
+invented fraud to a real business, which is the one thing this repo's
+governance section refuses to do. The photographs were selected on the same
+rule: `web/public/products/CREDITS.md` records the source of each, and none of
+them has a legible brand in it.
 
-Real deployments replace this module with a join against the product table.
-The storefront asks for `catalog_for(ids, categories)` and does not care
-which of the two it got -- see `frd.api.storefront`.
+HOW 888 CORPUS PRODUCTS BECOME 61 LISTINGS
+------------------------------------------
+The review corpus has 888 product ids; the shop has 61 listings. `assign()`
+maps the two by ranking each department's corpus products by review count and
+taking the top N, where N is however many listings that department has.
+
+Two things about that rule are deliberate:
+
+  * It is neutral. Ranking by *manipulation* instead would stock the shop with
+    exactly the products that best demonstrate the detector, and every number
+    on the home page would then be a selection effect. Review count is chosen
+    before anything is scored and correlates with nothing the model does.
+  * It is not neutral about popularity, and that is fine -- a busy product is
+    also a campaign's preferred target (`frd.data.synth` weights both by the
+    same Pareto draw), so the shop inherits a realistic share of manipulated
+    listings rather than an artificially clean or artificially dirty one.
+
+The moderation console still works on all 888. Only the shop is a subset, and
+`/shop/stats` reports the two counts separately so the page never implies it
+is showing the whole corpus.
 """
 
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass, replace
+import json
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
-import numpy as np
-import pandas as pd
+CATALOGUE_PATH = Path(__file__).with_name("products.json")
 
-# --- vocabulary ------------------------------------------------------------
-#
-# Per category: who makes it, what it is, and how it is qualified. Deliberately
-# invented brands -- naming a real one would put fabricated review scores
-# against a real company's product, which is exactly the kind of thing this
-# repo's own governance section (ROADMAP phase 10) exists to refuse.
+# Listings the shop shows even if their corpus product has almost no reviews.
+# Nothing depends on this today -- it is here so a department whose corpus
+# products are all tiny still renders rather than silently emptying.
+MIN_CORPUS_REVIEWS = 0
+
 
 @dataclass(frozen=True, slots=True)
-class CategorySpec:
-    brands: tuple[str, ...]
-    nouns: tuple[str, ...]
-    modifiers: tuple[str, ...]
-    price: tuple[float, float]      # lognormal-ish band, in whole currency
-    glyph: str
-    hue: tuple[int, int]            # degrees, for the generated product art
-    features: tuple[str, ...]
+class Variant:
+    """One buyable combination of a product's options."""
 
+    sku: str
+    label: str                       # "Graphite / Large"
+    choices: dict[str, str]          # {"Colour": "Graphite", "Size": "Large"}
+    price: float
+    stock: int
 
-CATEGORY_SPECS: dict[str, CategorySpec] = {
-    "electronics": CategorySpec(
-        brands=("Aurora", "Kestrel", "Novaline", "Halcyon", "Tessel", "Voltaic",
-                "Meridian", "Cobalt Ridge", "Signalcraft", "Orbex"),
-        nouns=("Monitor", "Headphones", "Mechanical Keyboard", "Webcam",
-               "Portable SSD", "Bluetooth Speaker", "USB-C Hub", "Power Bank",
-               "Soundbar", "Wireless Mouse", "Studio Microphone", "Router"),
-        modifiers=('27" 4K', "Pro", "Mk II", "Wireless", "Studio", "Compact",
-                   "Series 7", "Nano", "XL", "Low-Latency"),
-        price=(24.0, 649.0),
-        glyph="◈",
-        hue=(198, 262),
-        features=("Two-year manufacturer warranty", "USB-C, 100W passthrough",
-                  "Firmware updates for 5 years", "Recycled aluminium chassis",
-                  "Works with Windows, macOS and Linux"),
-    ),
-    "office": CategorySpec(
-        brands=("Fieldnote", "Cartwright", "Ledger & Co", "Ashgrove", "Penrose",
-                "Quillard", "Straightedge", "Bindery", "Northmark", "Vellum"),
-        nouns=("Notebook", "Desk Lamp", "Monitor Arm", "Fountain Pen",
-               "Document Scanner", "Standing Desk Mat", "Label Maker",
-               "Filing Box", "Whiteboard", "Ergonomic Footrest",
-               "Laser Pointer", "Desk Organiser"),
-        modifiers=("A5", "Dotted", "Adjustable", "Refillable", "Slimline",
-                   "Executive", "Matte Black", "Two-Pack", "Heavy-Duty"),
-        price=(6.0, 289.0),
-        glyph="▤",
-        hue=(28, 46),
-        features=("FSC-certified paper", "Lies flat when open",
-                  "Tool-free assembly", "Ships in plastic-free packaging",
-                  "Refills sold separately"),
-    ),
-    "home_kitchen": CategorySpec(
-        brands=("Copperfield", "Hearthstone", "Marrow & Bell", "Saltmoor",
-                "Ovenbird", "Clay Lane", "Tindale", "Brightwell", "Ferro",
-                "Kettleworth"),
-        nouns=("Cast Iron Skillet", "Stand Mixer", "Chef's Knife",
-               "French Press", "Air Fryer", "Storage Set", "Kettle",
-               "Blender", "Baking Tray", "Espresso Grinder", "Dutch Oven",
-               "Cutting Board"),
-        modifiers=("10-Inch", "Pre-Seasoned", "Stainless", "1.7L", "Six-Piece",
-                   "Non-Stick", "Professional", "Enamelled", "Burr"),
-        price=(11.0, 379.0),
-        glyph="◍",
-        hue=(4, 22),
-        features=("Dishwasher safe", "Oven safe to 260°C",
-                  "Lifetime guarantee on the body", "BPA-free throughout",
-                  "Induction, gas and electric compatible"),
-    ),
-    "sports": CategorySpec(
-        brands=("Ridgeway", "Summit Fell", "Tailwind", "Cadence", "Ironbark",
-                "Stridelab", "Peakform", "Windward", "Basalt", "Trailhead"),
-        nouns=("Running Shoes", "Yoga Mat", "Resistance Bands", "Dumbbell Set",
-               "Cycling Helmet", "Hydration Pack", "Foam Roller",
-               "Jump Rope", "Trekking Poles", "Kettlebell", "Fitness Tracker",
-               "Swim Goggles"),
-        modifiers=("Trail", "6mm", "Adjustable", "Carbon", "Lightweight",
-                   "All-Weather", "Competition", "Vented", "Pro"),
-        price=(9.0, 329.0),
-        glyph="▲",
-        hue=(96, 156),
-        features=("Tested to EN standards", "Machine washable",
-                  "Non-slip textured surface", "Packs down to 1.2kg",
-                  "Sweat and salt resistant"),
-    ),
-    "beauty": CategorySpec(
-        brands=("Lumen & Rye", "Petalwork", "Osmyn", "Verawild", "Silke",
-                "Bloomcourt", "Attar", "Northlight", "Cerulea", "Maren"),
-        nouns=("Facial Serum", "Hair Dryer", "Sunscreen", "Cleansing Balm",
-               "Lip Treatment", "Makeup Brush Set", "Body Lotion",
-               "Retinol Cream", "Hair Oil", "Electric Trimmer",
-               "Eye Cream", "Face Mask Set"),
-        modifiers=("SPF 50", "Fragrance-Free", "Vitamin C", "Ionic",
-                   "Ten-Piece", "Overnight", "Daily", "Ceramide",
-                   "Dermatologist-Tested"),
-        price=(7.0, 189.0),
-        glyph="✦",
-        hue=(300, 344),
-        features=("Dermatologist tested", "Free from parabens and sulphates",
-                  "Not tested on animals", "Suitable for sensitive skin",
-                  "Recyclable glass bottle"),
-    ),
-    "pet_supplies": CategorySpec(
-        brands=("Barkfield", "Whiskerton", "Paw & Pine", "Kibblecraft",
-                "Meadowpaw", "Tuftly", "Rundle", "Companion Row", "Fetchwell",
-                "Burrow"),
-        nouns=("Dog Bed", "Cat Tree", "Slow Feeder Bowl", "Lead & Harness Set",
-               "Litter Box", "Chew Toy", "Grooming Brush", "Pet Carrier",
-               "Water Fountain", "Training Pads", "Scratching Post",
-               "Puzzle Feeder"),
-        modifiers=("Large", "Orthopaedic", "Washable", "No-Pull", "Enclosed",
-                   "Indestructible", "Two-Pack", "Stainless", "Quiet"),
-        price=(6.0, 219.0),
-        glyph="❋",
-        hue=(168, 196),
-        features=("Machine washable cover", "Chew-resistant stitching",
-                  "Vet recommended", "Non-toxic materials throughout",
-                  "Suits pets up to 40kg"),
-    ),
-    "clothing": CategorySpec(
-        brands=("Thornwood", "Ellery", "Saltmarsh", "Foldwear", "Craneleigh",
-                "Wren & Ash", "Bellweather", "Loomhouse", "Idris", "Kittiwake"),
-        nouns=("Merino Jumper", "Rain Jacket", "Chino Trousers", "Oxford Shirt",
-               "Wool Socks", "Leather Belt", "Packable Gilet", "Linen Dress",
-               "Fleece Hoodie", "Overshirt", "Knit Beanie", "Denim Jacket"),
-        modifiers=("Slim Fit", "Waterproof", "Three-Pack", "Organic Cotton",
-                   "Midweight", "Relaxed", "Insulated", "Stretch", "Unlined"),
-        price=(12.0, 249.0),
-        glyph="◇",
-        hue=(212, 238),
-        features=("Machine wash at 30°C", "Certified organic cotton",
-                  "Reinforced seams at stress points",
-                  "Sizes XS to 3XL", "Made in a Fair Wear audited factory"),
-    ),
-    "toys": CategorySpec(
-        brands=("Puzzlecraft", "Tinkerfield", "Brightblock", "Cogsworth",
-                "Marbleworks", "Playhaven", "Wonderbench", "Fablewood",
-                "Rumpus", "Knacks"),
-        nouns=("Building Set", "Wooden Train Set", "Jigsaw Puzzle",
-               "Board Game", "Science Kit", "Ride-On Car", "Plush Bear",
-               "Marble Run", "Craft Box", "Remote Control Drone",
-               "Magnetic Tiles", "Card Game"),
-        modifiers=("1000-Piece", "Ages 3+", "Deluxe", "Starter",
-                   "100-Piece", "Family Edition", "Beginner", "Motorised",
-                   "Collector's"),
-        price=(8.0, 159.0),
-        glyph="✧",
-        hue=(44, 74),
-        features=("CE and UKCA certified", "No small parts for under-3s",
-                  "Batteries included", "FSC-certified beech",
-                  "Compatible with major building-brick brands"),
-    ),
-}
-
-# Any category the corpus contains that the vocabulary above does not know.
-_FALLBACK = CategorySpec(
-    brands=("Kestrel", "Meridian", "Northmark", "Ferro", "Trailhead"),
-    nouns=("Everyday Essential", "Standard Kit", "Replacement Set"),
-    modifiers=("Standard", "Two-Pack", "Large"),
-    price=(9.0, 199.0),
-    glyph="●",
-    hue=(210, 220),
-    features=("Ships within one working day", "30-day returns"),
-)
-
-_SERIES = ("", "Pro", "V2", "S7", "Air", "Mk II", "Plus", "Studio", "One",
-           "Max", "Lite", "Edge")
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
 class Product:
-    """Storefront metadata for one product id."""
+    """One listing, plus the corpus product whose reviews it carries."""
 
-    product_id: str
+    product_id: str                  # the corpus id -- what reviews join on
+    slug: str
+    sku: str
     name: str
     brand: str
     category: str
+    department: str                  # display name, e.g. "Home & Kitchen"
     price: float
+    compare_at: float | None
     currency: str
-    features: tuple[str, ...]
-    # Handed to the client so generated product art is identical everywhere it
-    # is drawn. Deriving it in TypeScript from the id would be a second
-    # implementation of this file's hash, and would drift the first time either
-    # side changed.
-    hue: int
-    hue_shift: int
-    glyph: str
+    summary: str
+    description: str
+    bullets: tuple[str, ...]
+    specs: dict[str, str]
+    options: tuple[dict[str, Any], ...]
+    variants: tuple[Variant, ...]
+    stock: int
+    tags: tuple[str, ...]
+    image: str
 
-    def to_dict(self) -> dict:
+    @property
+    def on_sale(self) -> bool:
+        return self.compare_at is not None and self.compare_at > self.price
+
+    def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        d["features"] = list(self.features)
+        d["bullets"] = list(self.bullets)
+        d["tags"] = list(self.tags)
+        d["options"] = [dict(o) for o in self.options]
+        d["variants"] = [v.to_dict() for v in self.variants]
+        d["on_sale"] = self.on_sale
         return d
 
 
-def _seed(product_id: str) -> int:
-    """A process-stable seed. `hash()` is salted per interpreter; this is not."""
-    digest = hashlib.blake2b(product_id.encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "big")
+@lru_cache(maxsize=1)
+def _raw() -> dict[str, Any]:
+    return json.loads(CATALOGUE_PATH.read_text(encoding="utf-8"))
 
 
-def product_for(product_id: str, category: str, currency: str = "USD") -> Product:
-    """Deterministic storefront metadata for one product.
+def departments() -> list[dict[str, str]]:
+    """The shop's departments, in the order they should be displayed."""
+    return [dict(d) for d in _raw()["departments"]]
 
-    Same id in, same product out -- across processes, machines and restarts.
+
+def currency() -> str:
+    return str(_raw()["currency"])
+
+
+def _sku(slug: str) -> str:
+    """A stable, readable SKU: initials of the slug plus a digit tail."""
+    parts = [p for p in slug.split("-") if p]
+    head = "".join(p[0] for p in parts[:3]).upper()
+    tail = str(sum(ord(c) for c in slug) % 9000 + 1000)
+    return f"{head}-{tail}"
+
+
+def _option_code(values: Iterable[str]) -> str:
+    """A short, readable code for one combination of option values."""
+    parts = []
+    for v in values:
+        letters = "".join(c for c in str(v) if c.isalnum()).upper()
+        parts.append(letters[:3] or "X")
+    return "-".join(parts)
+
+
+def _variants(slug: str, base_sku: str, price: float, stock: int,
+              options: Sequence[Mapping[str, Any]]) -> tuple[Variant, ...]:
+    """The cartesian product of the option groups, one buyable variant each.
+
+    Stock is split across variants rather than repeated: a product with 40 in
+    stock and 4 variants has 40 units in total, not 160. Spreading it unevenly
+    (the first variants get the remainder) keeps a "2 left" state reachable in
+    the UI without needing a separate fixture for it.
     """
-    spec = CATEGORY_SPECS.get(str(category), _FALLBACK)
-    rng = np.random.default_rng(_seed(str(product_id)))
+    if not options:
+        return (Variant(base_sku, "Default", {}, price, stock),)
 
-    brand = str(rng.choice(spec.brands))
-    noun = str(rng.choice(spec.nouns))
-    modifier = str(rng.choice(spec.modifiers))
-    series = str(rng.choice(_SERIES))
+    combos: list[dict[str, str]] = [{}]
+    for group in options:
+        name = str(group["name"])
+        combos = [c | {name: str(v)} for c in combos for v in group["values"]]
 
-    pattern = int(rng.integers(0, 3))
-    if pattern == 0:
-        name = f"{brand} {modifier} {noun}"
-    elif pattern == 1:
-        name = f"{brand} {noun} {modifier}"
-    else:
-        name = f"{brand} {series} {noun}".replace("  ", " ")
+    out: list[Variant] = []
+    base, extra = divmod(stock, len(combos))
+    used: set[str] = set()
+    for i, choices in enumerate(combos):
+        sku = f"{base_sku}-{_option_code(choices.values())}"
+        # Distinct option values can still abbreviate to the same code --
+        # "Cobalt" and "Charcoal" both start CO/CH only by luck, and two-letter
+        # collisions are common enough that this was a real defect. A colliding
+        # variant gets a numeric tail rather than silently overwriting the
+        # first one in the cart, where a SKU is the primary key of a line.
+        if sku in used:
+            sku = f"{sku}{i}"
+        used.add(sku)
+        out.append(Variant(
+            sku=sku,
+            label=" / ".join(choices.values()),
+            choices=choices,
+            price=price,
+            stock=base + (1 if i < extra else 0),
+        ))
+    return tuple(out)
 
-    # Log-uniform inside the category band, so a category holds a few expensive
-    # items and many cheap ones rather than a flat spread.
-    lo, hi = spec.price
-    raw = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
-    price = round(raw) - 0.01 if raw >= 20 else round(raw * 2) / 2 - 0.01
-    price = max(price, 1.99)
 
-    n_feat = min(len(spec.features), 3)
-    features = tuple(
-        str(f) for f in rng.choice(spec.features, size=n_feat, replace=False)
-    )
+@lru_cache(maxsize=1)
+def _listings() -> tuple[dict[str, Any], ...]:
+    """The catalogue file, parsed and enriched, still without a corpus id."""
+    raw = _raw()
+    dept_name = {d["key"]: d["name"] for d in raw["departments"]}
+    cur = str(raw["currency"])
+    out = []
+    for item in raw["products"]:
+        slug = str(item["slug"])
+        sku = _sku(slug)
+        price = float(item["price"])
+        stock = int(item.get("stock", 0))
+        options = tuple(dict(o) for o in item.get("options", []))
+        out.append({
+            "slug": slug,
+            "sku": sku,
+            "name": str(item["name"]),
+            "brand": str(item["brand"]),
+            "category": str(item["category"]),
+            "department": dept_name.get(str(item["category"]), str(item["category"])),
+            "price": price,
+            "compare_at": (
+                float(item["compare_at"])
+                if item.get("compare_at") is not None else None
+            ),
+            "currency": cur,
+            "summary": str(item.get("summary", "")),
+            "description": str(item.get("description", "")),
+            "bullets": tuple(str(b) for b in item.get("bullets", [])),
+            "specs": {str(k): str(v) for k, v in item.get("specs", {}).items()},
+            "options": options,
+            "variants": _variants(slug, sku, price, stock, options),
+            "stock": stock,
+            "tags": tuple(str(t) for t in item.get("tags", [])),
+            # Served, not derived client-side: the file name is the catalogue's
+            # business, and a component that rebuilds it from the slug breaks
+            # silently the first time a listing is renamed.
+            "image": f"/products/{slug}.webp",
+        })
+    return tuple(out)
 
-    hue = int(rng.integers(spec.hue[0], spec.hue[1] + 1))
 
-    return Product(
-        product_id=str(product_id),
-        name=name.strip(),
-        brand=brand,
-        category=str(category),
-        price=round(float(price), 2),
-        currency=currency,
-        features=features,
-        hue=hue,
-        hue_shift=int(rng.integers(18, 55)),
-        glyph=spec.glyph,
-    )
+def listings() -> list[dict[str, Any]]:
+    """Every catalogue listing, with no corpus product attached yet."""
+    return [dict(item) for item in _listings()]
 
+
+def assign(corpus: Mapping[str, tuple[str, int]]) -> dict[str, Product]:
+    """Attach each listing to one corpus product id.
+
+    `corpus` maps a corpus product id to `(category, n_reviews)`. Within each
+    category the busiest corpus products win, in review-count order, ties
+    broken by id so the assignment does not move between runs on a frame whose
+    row order changed.
+
+    Returns a dict keyed by **corpus product id** -- the join key the rest of
+    the API already uses -- so callers that previously held a generated
+    catalogue keep the same shape.
+    """
+    by_category: dict[str, list[str]] = {}
+    for pid, (category, n) in corpus.items():
+        if n >= MIN_CORPUS_REVIEWS:
+            by_category.setdefault(str(category), []).append(str(pid))
+
+    for category, ids in by_category.items():
+        ids.sort(key=lambda p: (-corpus[p][1], p))
+
+    out: dict[str, Product] = {}
+    taken: dict[str, int] = {}
+    for item in _listings():
+        pool = by_category.get(item["category"], [])
+        i = taken.get(item["category"], 0)
+        if i >= len(pool):
+            # The corpus has fewer products in this department than the shop
+            # has listings for it. Skipping is right: a listing with no reviews
+            # would render a rating of "no rating" and a review count of zero,
+            # which is a real state for a real shop but a confusing one here.
+            continue
+        taken[item["category"]] = i + 1
+        pid = pool[i]
+        out[pid] = Product(product_id=pid, **item)
+    return out
+
+
+def by_slug(catalogue: Mapping[str, Product]) -> dict[str, Product]:
+    """The same catalogue keyed by slug, for URL lookups."""
+    return {p.slug: p for p in catalogue.values()}
+
+
+# --- compatibility ---------------------------------------------------------
+#
+# `catalog_for` was the old entry point and took (ids, categories). It has no
+# review counts to rank on, so it assigns in id order -- fine for a caller that
+# only wants "some listing per id", which is all the old tests wanted.
 
 def catalog_for(
     product_ids: Sequence[str] | Iterable[str],
     categories: Sequence[str] | Iterable[str],
-    currency: str = "USD",
+    currency: str | None = None,
 ) -> dict[str, Product]:
-    """Metadata for many products, keyed by id.
-
-    `categories` is positional with `product_ids`; the first category seen for
-    an id wins, so passing a full review frame's two columns works directly.
-    """
-    out: dict[str, Product] = {}
-    for pid, cat in zip(product_ids, categories):
-        key = str(pid)
-        if key not in out:
-            out[key] = product_for(key, cat, currency=currency)
-
-    # Distinct ids can land on the same name -- ~2% of them on an 888-product
-    # corpus, which on a grid reads as a rendering bug rather than as two
-    # similar listings. `product_for` cannot see the collision (it is a pure
-    # function of one id, which is the property that makes it cacheable), so
-    # the set-aware caller resolves it. Order is by id, so the winner and the
-    # renamed loser are stable across runs.
     seen: dict[str, str] = {}
-    for key in sorted(out):
-        prod = out[key]
-        if prod.name not in seen:
-            seen[prod.name] = key
-            continue
-        suffix = key[-3:] if len(key) >= 3 else key
-        out[key] = replace(prod, name=f"{prod.name} ({suffix})")
-        seen[out[key].name] = key
-    return out
+    for pid, cat in zip(product_ids, categories):
+        seen.setdefault(str(pid), str(cat))
+    # Rank by id, descending, so the first id in the caller's order wins the
+    # first listing -- `assign` sorts by (-count, id) and count is constant here.
+    order = {pid: (cat, len(seen) - i) for i, (pid, cat) in enumerate(seen.items())}
+    return assign(order)
 
 
-def catalog_frame(df: pd.DataFrame, currency: str = "USD") -> pd.DataFrame:
-    """One row of catalogue metadata per distinct product in a review frame."""
-    pairs = df[["product_id", "category"]].drop_duplicates("product_id")
-    cat = catalog_for(pairs["product_id"], pairs["category"], currency=currency)
-    return pd.DataFrame([p.to_dict() for p in cat.values()]).set_index("product_id")
+@lru_cache(maxsize=1)
+def _slug_index() -> dict[str, dict[str, Any]]:
+    return {item["slug"]: item for item in _listings()}
+
+
+def listing_for(slug: str) -> dict[str, Any] | None:
+    """One catalogue listing by slug, with no corpus product attached.
+
+    This is the lookup the cart and the order writer use. They deliberately do
+    NOT go through `assign()`: pricing a basket must not require a trained
+    model and a scored corpus to be in memory, and a listing's price is a
+    property of the catalogue, not of anything the detector computed.
+    """
+    item = _slug_index().get(str(slug))
+    return dict(item) if item else None
+
+
+def variant_for(slug: str, variant_sku: str) -> tuple[dict[str, Any], Variant] | None:
+    """A (listing, variant) pair, or None if either half is unknown."""
+    item = listing_for(slug)
+    if item is None:
+        return None
+    for v in item["variants"]:
+        if v.sku == variant_sku:
+            return item, v
+    return None
