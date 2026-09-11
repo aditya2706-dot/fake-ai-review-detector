@@ -109,6 +109,13 @@ The service **reuses the training feature code** rather than reimplementing it,
 and `tests/test_api.py::test_api_and_offline_scores_agree` asserts both paths
 produce the same number.
 
+Two surfaces sit on top of it (`web/`), both reading one scored-corpus cache: a
+moderation console, and a storefront that shows every rating as listed and again
+with the `auto_remove` tier withheld. The storefront is where the cost asymmetry
+stops being theoretical -- it withholds at the auto-remove line rather than the
+queue threshold, which is the difference between suppressing an innocent review
+one time in eight and one time in seventeen. See README "The storefront".
+
 **Most common mistake:** a second feature implementation on the serving path.
 Offline metrics stay perfect while the live model quietly degrades.
 
@@ -140,10 +147,23 @@ the finding.
 after real labels, especially on the cold-start slice, because a new account
 inside a known cluster is suspicious on arrival."*
 
-**What measuring it produced:** +0.004 test PR-AUC on the fused model, 5.1% of
-stage-B feature importance, and **no improvement at cold start** — the
-`reviewer_history=0` slice moved from 0.034 to 0.038, which is noise on 225
-rows. The prediction was wrong in a way that is obvious in hindsight: *an
+**What measuring it produced, first time:** +0.004 test PR-AUC on the fused
+model, 5.1% of stage-B feature importance, and **no improvement at cold
+start**.
+
+**What measuring it four times produced:** nothing distinguishable from zero.
+Across two corpus draws × two split regimes the block's contribution to the
+fused model reads **−0.0002, +0.0038, +0.0018, −0.0033** — all inside 0.004,
+sign effectively random. Validation and test disagreed about whether to ship
+it on *both* corpora, in opposite directions, which is how the
+selection-on-test bug in METHODOLOGY §3.6 got found: the presence of this
+entire feature block in the shipped model was a test-set coin flip. It stays
+in because validation prefers it on the current corpus, which is a much weaker
+claim than "+0.004 PR-AUC" sounded.
+
+Cold start is unchanged and unhelped: the `reviewer_history=0` slice reads
+0.017–0.038 across draws on 217–225 rows with single-digit positives, which is
+noise around nothing. The prediction was wrong in a way that is obvious in hindsight: *an
 account with no history has no edges either.* The co-review graph is exactly as
 empty at cold start as the behavioural counters are, and for the same reason.
 "A new account inside a known cluster" presumes you can place the account in
@@ -172,7 +192,9 @@ chronological pass and passes the same truncation proof as the behavioural
 block. Embeddings stay reachable through periodic snapshots, each fitted only
 to data before its cutoff — a feature-store project, not a function.
 
-**It also exposed a defect in the simulator.** The graph block initially found
+**It also exposed a defect in the simulator** (the first of two; the second,
+a sentiment/rating oracle worth 97.9% precision to a hand-written rule, is
+METHODOLOGY §5.2). The graph block initially found
 nothing because the generator contained no coordinated structure: campaigns
 drew workers independently from a flat account pool, so farm pairs co-reviewed
 *less* than genuine pairs did (0.8% vs 6.8%), and farm accounts never posted
@@ -187,11 +209,13 @@ Finding this was worth more than the feature block was.
    graph would. A farm posting one review per account per week defeats them and
    leaves the co-review structure intact. The synthetic generator does not
    currently simulate one — that, not more graph features, is the next honest
-   experiment.
-2. **The cold-reviewer split**, where `graph_only` scores 0.605 against 0.526
-   on the temporal split. Structure generalises to unseen accounts better than
-   it generalises across time, which is the one result that came out as
-   predicted.
+   experiment, and it is now the *only* remaining way to justify keeping the
+   block: four measurements have failed to show it helping.
+2. **The cold-reviewer split**, where `graph_only` scores 0.567 against 0.550
+   on the temporal split. Structure still generalises to unseen accounts a
+   little better than it generalises across time — the one result that came out
+   as predicted — but the gap was 0.079 on the first corpus draw and is 0.017
+   on the second, so treat the direction as the finding and not the size.
 3. **Real labelled data** (phase 6), where farms are vastly more structured
    than any simulation of them.
 

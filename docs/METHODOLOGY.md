@@ -170,6 +170,41 @@ now supplies context on both sides, and fails on the old code.
 
 ---
 
+### 3.6 Selection leakage: choosing the architecture on test
+
+§3.5 is about the same bug on the serving path. This one is about the shipped
+artifact itself.
+
+`train.py` runs eight ablation rungs and saves the winner. It used to pick that
+winner by **test** PR-AUC. Tuning a threshold on test is the mistake §2 calls
+out; choosing which of eight correlated architectures to ship on test is that
+mistake one level up, and it has two consequences:
+
+1. the reported headline becomes a **maximum over eight draws** rather than an
+   estimate of the chosen model's performance;
+2. test leaks into the artifact, so the number quoted for the shipped model is
+   the one number it was chosen for.
+
+It was not academic here. `full_fusion` and `full_fusion_plus_graph` sit within
+0.004 PR-AUC of one another, and **validation and test disagreed about the
+winner on both corpus draws, in opposite directions**:
+
+| | validation prefers | test prefers |
+|---|---|---|
+| corpus with the sentiment oracle (§5.2) | `full_fusion` (0.9208 v 0.9206) | `full_fusion_plus_graph` (0.9137 v 0.9099) |
+| corpus with it removed | `full_fusion_plus_graph` (0.9245 v 0.9227) | `full_fusion` (0.9238 v 0.9205) |
+
+So the presence of the entire graph feature block in the shipped model was
+being decided by a test-set coin flip. Selection is now on validation
+(`train.py`, `best_model.selected_on`); test is only ever reported.
+`tests/test_leakage.py::test_shipped_model_is_selected_on_validation_not_test`
+locks it in.
+
+The finding underneath this is in §5.2: measured four times, the graph block's
+contribution to the fused model is indistinguishable from zero.
+
+---
+
 ## 4. Architecture: why two stages
 
 The two signal families have incompatible shapes.
@@ -288,9 +323,81 @@ like the answer. Two things keep it honest here, and neither is optional:
 | `full_fusion_plus_graph` | 0.920 | 0.914 |
 
 Every number fell except the two involving graph features. That is the shape a
-removed oracle produces, and it is the reason the headline in `README.md` is
-now 0.914 rather than 0.923. **The old number was better because the old data
-was easier, not because the old model was.**
+removed oracle produces, and it took the headline of the day from 0.923 to
+0.914. **The old number was better because the old data was easier, not
+because the old model was.** (The current headline is 0.920 on a later corpus
+draw — see §5.2, which removed a second oracle and, unlike this one, did not
+lower anything.)
+
+### 5.2 A second generator defect: sentiment that contradicted the rating
+
+Found while building the storefront, and for a reason worth noting: the console
+renders reviews as queue rows, where nobody reads the prose. A shopper-facing
+product page renders them as prose, and the prose was incoherent —
+
+> ★1 "Not as described" — *"Very happy with this. The colour is cheap and the
+> price is flimsy… Highly recommend to everyone!"*
+
+**The defect.** Slogan openers and the paid-review closer were drawn from
+all-positive pools **regardless of rating**, at four separate sites: the
+per-campaign template (so an attack campaign ran a five-star slogan), the
+unsophisticated fake opener, the fake closer, and the genuine "brand loyalist"
+path (which could gush under a one-star rating). Fakes used those pools far
+more often than genuine reviews did, so the sentiment mismatch became a label
+oracle.
+
+**Measured.** 68.3% of 1–2 star fakes carried five-star copy, against 0.4% of
+genuine ones. The hand-written rule `rating <= 2 AND a glowing closer` scored
+**97.9% precision** over 12.6% of all fakes — a classifier, with no model.
+
+That directly violated this generator's own stated rule: both classes draw from
+one shared pool, and separation must come from *how* text is assembled, not
+from magic words. A farm running an attack campaign does not write "Highly
+recommend to everyone!" under one star, so every point the model earned from
+that contradiction was borrowed against nothing.
+
+**The fix** splits every pool by sentiment on the same `rating >= 4` test the
+adjective pools already used, and gates brand-loyalist gushing to 4–5 stars.
+The *structural* tells are deliberately kept: paid copy is still slogan-dense,
+aspect-vague and template-derived, and the negative pools are written in the
+same register as the positive ones. Afterwards, five-star copy on a low-rated
+review sits at 0.0% in **both** classes and the shortcut rule never fires,
+while slogan density still separates the classes symmetrically (77% of fakes
+against 32% of genuine at 1–2 stars; 76% against 38% at 4–5).
+
+**Both sets of numbers, as in §5.1:**
+
+| Temporal split, test PR-AUC | With the oracle | Oracle removed |
+|---|---|---|
+| `text_only` | 0.813 | 0.819 |
+| `linguistic_only` | 0.830 | 0.832 |
+| `behaviour_only` | 0.887 | 0.888 |
+| `graph_only` | 0.526 | 0.550 |
+| `text_plus_linguistic` | 0.862 | 0.865 |
+| `full_fusion` | 0.910 | 0.924 |
+| `full_fusion_plus_graph` | 0.914 | 0.920 |
+
+**Nothing fell, which was not the prediction.** §5.1 removed an oracle and
+every number dropped; this one removed an oracle and nothing did. Two reasons,
+and neither is "the fix improved the model":
+
+- **The oracle was redundant.** It was removed, but slogan *density* remains
+  and does nearly the same work — a text model can separate on "carries an
+  opener or closer at all" without needing the sentiment to contradict the
+  rating. The task barely got harder because the illegitimate cue overlapped a
+  legitimate one.
+- **It is not a clean A/B.** Gating the promo path on rating changes how many
+  random draws `_genuine_text` makes, which shifts the whole RNG stream: the
+  new corpus is a different draw (4,968 reviewers against 5,005, positive rate
+  0.1916 against 0.1927). Deltas of +0.007 and +0.014 are inside that
+  variance. Isolating the fix would need a paired design that this change makes
+  impossible, so **the deltas above must not be read as an effect of the fix.**
+  What is verified is narrower and sufficient: the oracle is gone.
+
+**What it did change materially** is the graph block. Its contribution to the
+fused model, now measured four times across two corpora and two splits, reads
+−0.0002, +0.0038, +0.0018 and −0.0033. It is **indistinguishable from zero**,
+and the sign flip is what exposed the selection-leakage bug in §3.6.
 
 **What synthetic data can and cannot tell you.** It validates that the pipeline
 is correct, the features are causal, the architecture fuses signal, and the

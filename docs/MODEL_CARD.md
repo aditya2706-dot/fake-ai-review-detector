@@ -8,7 +8,7 @@
 | **Output** | Calibrated P(fake) in [0,1], plus a tiered action and reason codes |
 | **Architecture** | Two-stage stack — TF-IDF + LogisticRegression → `text_score`; gradient-boosted trees over behavioural + graph + linguistic + `text_score` |
 | **Training data** | Synthetic marketplace, 40k reviews, ~19% positive. **Not production data.** |
-| **Test PR-AUC** | 0.914 temporal / 0.905 cold-reviewer, against a 0.172 base rate |
+| **Test PR-AUC** | 0.920 temporal / 0.919 cold-reviewer, against a 0.172 base rate (architecture selected on validation, not on these) |
 | **Primary metric** | PR-AUC on a temporal split |
 | **Version** | 0.1.0 |
 
@@ -46,7 +46,11 @@ any number for planning.
 
 **The generator was revised during development** — farms given reusable account
 rosters, farm accounts given genuine cover traffic — which moved every reported
-figure. `docs/METHODOLOGY.md` §5.1 publishes the before and after side by side.
+figure. A second defect was found later: slogan openers and closers were drawn
+from all-positive pools regardless of rating, so a hand-written rule exploiting
+the sentiment/rating contradiction scored 97.9% precision over 12.6% of fakes.
+`docs/METHODOLOGY.md` §5.1 and §5.2 publish the before and after side by side
+for both.
 
 **Known blind spot, stated plainly:** the model recalls **nothing** at the
 operating threshold for authors with fewer than three prior reviews. Graph

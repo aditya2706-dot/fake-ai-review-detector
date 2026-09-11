@@ -31,6 +31,11 @@ So this generator deliberately fights itself:
     features exist to find, and that a flat account pool does not produce
   * farm accounts post genuine COVER reviews, so the account id is not itself
     the label and the model has to judge the review rather than the reviewer
+  * sentiment follows the RATING in both classes. Fakes are slogan-dense and
+    genuine reviews are specific, which is a difference in how text is
+    assembled; a one-star review that reads "Highly recommend to everyone!" is
+    not, it is a label oracle. See METHODOLOGY §5.2 -- this was a real defect
+    here, and a hand-written rule exploiting it scored 97.9% precision
 
 The result is a dataset where an honest model lands in a realistic band
 (PR-AUC roughly 0.75-0.90) instead of a suspicious 0.99.
@@ -43,8 +48,18 @@ import pandas as pd
 
 from ..config import SynthConfig
 from ..schema import (
-    CATEGORY, HELPFUL, LABEL, PRODUCT_ID, RATING, REVIEW_ID, REVIEWER_ID,
-    TEXT, TIMESTAMP, TITLE, VERIFIED, normalise,
+    CATEGORY,
+    HELPFUL,
+    LABEL,
+    PRODUCT_ID,
+    RATING,
+    REVIEW_ID,
+    REVIEWER_ID,
+    TEXT,
+    TIMESTAMP,
+    TITLE,
+    VERIFIED,
+    normalise,
 )
 
 CATEGORIES = [
@@ -70,11 +85,52 @@ ASPECTS = [
     "instructions", "customer service", "material", "size", "colour",
     "weight", "noise level", "charging", "assembly", "warranty", "fit",
 ]
-GENERIC_OPENERS = [
+# Slogan openers, split by sentiment.
+#
+# These used to be one all-positive pool applied regardless of rating, which
+# broke the honest-generator rule at the top of this file. Low-rated fakes got
+# a glowing opener AND a glowing closer every time, while low-rated genuine
+# reviews got one only 35% of the time and never a closer -- so 68% of 1-2
+# star fakes carried five-star copy against 0.4% of genuine ones. A hand-
+# written rule (`rating <= 2 AND a glowing closer`) scored 97.9% precision and
+# caught 68% of all low-rated fakes with no model at all. That is exactly the
+# "magic words" separation this generator exists to avoid: the sentiment/rating
+# contradiction was doing work that real attack campaigns would never hand you.
+#
+# The structural tells are deliberately preserved -- both pools are equally
+# sloganeering, aspect-vague and absolute. What is gone is the sentiment
+# mismatch, not the vagueness.
+POSITIVE_OPENERS = [
     "I love this product", "Highly recommend", "Best purchase ever",
     "Exactly what I wanted", "Five stars", "Great value for money",
     "Very happy with this", "Would buy again", "Excellent product",
     "This is a must buy", "Totally worth it", "Amazing quality",
+]
+NEGATIVE_OPENERS = [
+    "I regret this purchase", "Cannot recommend", "Worst purchase ever",
+    "Not at all what I wanted", "One star", "Terrible value for money",
+    "Very unhappy with this", "Would not buy again", "Awful product",
+    "This is a must avoid", "Totally not worth it", "Dreadful quality",
+]
+
+
+def _openers(rating: float) -> list[str]:
+    """Sentiment-matched openers, on the same test the adjective pools use."""
+    return POSITIVE_OPENERS if rating >= 4 else NEGATIVE_OPENERS
+
+
+# The over-egged close is a genuine tell of paid copy, so it stays -- but it
+# has to be available in both sentiments, or it is only ever a tell about
+# boost campaigns. Constructions are kept parallel so the register matches.
+FAKE_CLOSERS_POSITIVE = [
+    "Highly recommend to everyone!", "Do not hesitate, just buy it!",
+    "Best on the market!", "Will definitely order again!",
+    "Five stars all the way!", "You need this in your life!",
+]
+FAKE_CLOSERS_NEGATIVE = [
+    "Avoid this one at all costs!", "Do not waste your money!",
+    "Worst on the market!", "Will never order again!",
+    "One star all the way!", "Nobody needs this in their life!",
 ]
 SPECIFIC_DETAILS = [
     "arrived two days early in a battered box",
@@ -118,11 +174,15 @@ def _genuine_text(rng: np.random.Generator, rating: float, promo: bool) -> str:
     positive = rating >= 4
     adj = POSITIVE_ADJ if positive else NEGATIVE_ADJ
 
-    if promo:
+    # A brand loyalist gushes about something they liked. `promo` is drawn
+    # independently of rating by the callers, so the coherence check is here:
+    # a gushing one-star "brand loyalist" was not a false-positive trap, it
+    # was noise no real reviewer produces.
+    if promo and positive:
         # Brand loyalist. Reads like an ad but is a genuine human -- the
         # false-positive trap the model has to survive.
         parts = [
-            rng.choice(GENERIC_OPENERS) + "!",
+            rng.choice(POSITIVE_OPENERS) + "!",
             f"The {rng.choice(ASPECTS)} is {rng.choice(POSITIVE_ADJ)}.",
             rng.choice(["Buy it.", "You won't regret it.", "10/10.", "Obsessed."]),
         ]
@@ -133,7 +193,7 @@ def _genuine_text(rng: np.random.Generator, rating: float, promo: bool) -> str:
 
     # Real reviews often open on an aspect rather than a slogan.
     if rng.random() < 0.35:
-        parts.append(rng.choice(GENERIC_OPENERS) + ".")
+        parts.append(rng.choice(_openers(rating)) + ".")
     parts.append(
         f"The {rng.choice(ASPECTS)} is {rng.choice(adj)} and the "
         f"{rng.choice(ASPECTS)} is {rng.choice(adj)}."
@@ -183,7 +243,7 @@ def _fake_text(
 
     positive = rating >= 4
     adj_pool = POSITIVE_ADJ if positive else NEGATIVE_ADJ
-    opener = template or rng.choice(GENERIC_OPENERS)
+    opener = template or rng.choice(_openers(rating))
 
     parts = [opener + "!"]
     for _ in range(int(rng.integers(1, 4))):
@@ -191,11 +251,9 @@ def _fake_text(
             f"{rng.choice(['Really','Very','Super','So','Absolutely'])} "
             f"{rng.choice(adj_pool)} {rng.choice(ASPECTS)}."
         )
-    parts.append(rng.choice([
-        "Highly recommend to everyone!", "Do not hesitate, just buy it!",
-        "Best on the market!", "Will definitely order again!",
-        "Five stars all the way!", "You need this in your life!",
-    ]))
+    parts.append(rng.choice(
+        FAKE_CLOSERS_POSITIVE if positive else FAKE_CLOSERS_NEGATIVE
+    ))
     return " ".join(parts)
 
 
@@ -265,7 +323,15 @@ def generate(cfg: SynthConfig | None = None) -> pd.DataFrame:
     camp_span = rng.uniform(0.5, 9.0, size=n_camp)        # burst window, days
     camp_size = rng.integers(6, 55, size=n_camp)
     camp_attack = rng.random(n_camp) < 0.22               # 1-star competitor hit
-    camp_template = [rng.choice(GENERIC_OPENERS) for _ in range(n_camp)]
+    # One template per campaign -- that reuse is the duplicate-text signal, so
+    # it stays per-campaign rather than per-review. But an attack campaign
+    # running a five-star slogan is the sentiment mismatch this generator was
+    # accidentally teaching the model, so the pool follows the campaign's
+    # direction.
+    camp_template = [
+        rng.choice(NEGATIVE_OPENERS if camp_attack[c] else POSITIVE_OPENERS)
+        for c in range(n_camp)
+    ]
 
     fake_rows: list[dict] = []
 

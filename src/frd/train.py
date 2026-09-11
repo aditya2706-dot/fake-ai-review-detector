@@ -209,9 +209,25 @@ def run_all(
                 "test": res.test,
             }
             # The temporal split is the production-realistic one, so the
-            # shipped model is chosen on it.
-            if kind == "temporal" and res.test["pr_auc"] > best[0]:
-                best = (res.test["pr_auc"], res)
+            # shipped model is chosen on it -- and chosen on VALIDATION, not
+            # test.
+            #
+            # This used to select on `res.test["pr_auc"]`, which is the same
+            # mistake as tuning a threshold on test, one level up: picking
+            # among 8 correlated architectures by their test score leaks test
+            # into the shipped artifact and makes the headline number a
+            # maximum over 8 draws rather than an estimate.
+            #
+            # It was not academic. `full_fusion` and `full_fusion_plus_graph`
+            # sit within 0.004 PR-AUC of each other, and across two corpus
+            # draws the graph block's contribution measured -0.0002, +0.0038,
+            # +0.0018 and -0.0033 -- indistinguishable from zero, with the
+            # sign flipping between val and test on *both* corpora. So the
+            # shipped architecture was effectively being decided by a
+            # test-set coin flip, in a repo whose own METHODOLOGY condemns
+            # exactly that. Test is now only ever reported.
+            if kind == "temporal" and res.val["pr_auc"] > best[0]:
+                best = (res.val["pr_auc"], res)
                 best_split = split
 
     # ---- artefacts for the winning model ----
@@ -226,6 +242,9 @@ def run_all(
             "name": res.name,
             "blocks": list(res.blocks),
             "split": "temporal",
+            # Both are recorded so it is visible which one did the choosing.
+            "selected_on": "val_pr_auc",
+            "val_pr_auc": res.val["pr_auc"],
             "test_pr_auc": res.test["pr_auc"],
         }
         report["threshold_table"] = json.loads(
