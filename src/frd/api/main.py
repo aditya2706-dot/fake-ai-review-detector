@@ -42,6 +42,7 @@ from .schemas import (
     BatchScoreRequest, BatchScoreResponse, HealthResponse, ScoreRequest,
     ScoreResponse,
 )
+from .storefront import router as shop_router
 
 MODEL_PATH = Path(os.environ.get("FRD_MODEL_PATH", MODEL_DIR / "detector.joblib"))
 MODEL_VERSION = os.environ.get("FRD_MODEL_VERSION", "dev")
@@ -90,6 +91,7 @@ app.add_middleware(
 )
 
 app.include_router(queue_router)
+app.include_router(shop_router)
 
 
 def _detector() -> FakeReviewDetector:
