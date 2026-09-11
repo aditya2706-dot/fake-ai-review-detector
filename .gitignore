@@ -11,6 +11,12 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+# The shop's accounts, baskets and orders. Regenerable, and the one file in
+# the tree that holds anything resembling personal data.
+data/store.db
+data/store.db-wal
+data/store.db-shm
+
 artifacts/models/*
 artifacts/reports/*
 artifacts/figures/*

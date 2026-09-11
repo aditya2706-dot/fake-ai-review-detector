@@ -109,22 +109,55 @@ export interface Health {
 /** A moderator's own call, held locally. See useDecisions. */
 export type ModeratorVerdict = "confirmed" | "cleared";
 
-// --- storefront (mirrors src/frd/api/storefront.py) ------------------------
+// --- storefront (mirrors src/frd/api/storefront.py + frd/data/catalog.py) ---
 
 /** Whether cleaning moved this product's rating, and which way. */
 export type Direction = "unchanged" | "inflated" | "attacked";
 
+export interface Variant {
+  sku: string;
+  /** "Graphite / Large", or "Default" for a product with no options. */
+  label: string;
+  choices: Record<string, string>;
+  price: number;
+  stock: number;
+}
+
+export interface OptionGroup {
+  name: string;
+  values: string[];
+}
+
+export interface Department {
+  key: string;
+  name: string;
+  tagline: string;
+}
+
+/** A catalogue listing plus what the detector did to its rating. */
 export interface ProductCard {
+  /** The corpus product whose reviews this listing carries. */
   product_id: string;
+  slug: string;
+  sku: string;
   name: string;
   brand: string;
   category: string;
+  department: string;
   price: number;
+  compare_at: number | null;
+  on_sale: boolean;
   currency: string;
-  features: string[];
-  hue: number;
-  hue_shift: number;
-  glyph: string;
+  summary: string;
+  description: string;
+  bullets: string[];
+  specs: Record<string, string>;
+  options: OptionGroup[];
+  variants: Variant[];
+  stock: number;
+  tags: string[];
+  /** Served by the API, not rebuilt from the slug here. See catalog.py. */
+  image: string;
 
   n_reviews: number;
   n_shown: number;
@@ -145,13 +178,16 @@ export interface ProductCard {
 
 export interface ShopStats {
   counts: {
-    n_products: number;
+    /** Listings in this shop. */
+    n_listed: number;
+    /** Products in the corpus the detector scored — a much bigger number. */
+    n_corpus_products: number;
     n_rankable: number;
     n_material: number;
     n_inflated: number;
     n_attacked: number;
   };
-  categories: string[];
+  departments: Department[];
   currency: string;
   threshold: number;
   auto_remove_at: number;
@@ -183,6 +219,7 @@ export interface ShopReview extends QueueItem {
 
 export interface ProductDetail {
   product: ProductCard;
+  related: ProductCard[];
   rating_histogram: { raw: Record<string, number>; shown: Record<string, number> };
   reviews: ShopReview[];
   withheld: ShopReview[];
@@ -196,4 +233,85 @@ export interface ProductDetail {
   material_delta: number;
   currency: string;
   train_period_ends: string;
+}
+
+// --- commerce (mirrors src/frd/api/commerce.py) ----------------------------
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  provider: string;
+  created_at: string;
+}
+
+export interface CartLine {
+  variant_sku: string;
+  slug: string;
+  name: string;
+  brand: string;
+  variant_label: string;
+  image: string;
+  unit_price: number;
+  qty: number;
+  line_total: number;
+  stock: number;
+  in_stock: boolean;
+}
+
+/** Every total is computed server-side; nothing here is derived in the client. */
+export interface Cart {
+  cart_id: string;
+  lines: CartLine[];
+  subtotal: number;
+  shipping: number;
+  tax: number;
+  total: number;
+  currency: string;
+  free_shipping_over: number;
+  free_shipping_remaining: number;
+  tax_rate: number;
+  n_items: number;
+}
+
+export interface Address {
+  name: string;
+  line1: string;
+  line2: string;
+  city: string;
+  postcode: string;
+  country: string;
+}
+
+export interface OrderItem {
+  variant_sku: string;
+  slug: string;
+  name: string;
+  variant_label: string;
+  image: string;
+  unit_price: number;
+  qty: number;
+  line_total: number;
+}
+
+export interface Order {
+  id: string;
+  created_at: string;
+  status: string;
+  email: string;
+  address: Address;
+  subtotal: number;
+  shipping: number;
+  tax: number;
+  total: number;
+  currency: string;
+  n_items: number;
+  items: OrderItem[];
+}
+
+export interface OrderHistory {
+  orders: Order[];
+  total: number;
+  limit: number;
+  offset: number;
 }

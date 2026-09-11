@@ -71,6 +71,6 @@ invented for the same reason.
 | `trailhead-daypack-22l.webp` | https://unsplash.com/photos/98eeb64c6a62 |
 | `tuftly-plush-bundle.webp` | https://unsplash.com/photos/f72a388edbba |
 | `verawild-serum-trio.webp` | https://unsplash.com/photos/6f916006741a |
-| `voltaic-br2-speakers.webp` | https://unsplash.com/photos/3531b543be5d |
+| `voltaic-drift-earbuds.webp` | https://unsplash.com/photos/104c94d37305 |
 | `voltaic-raptor-mouse.webp` | https://unsplash.com/photos/ac93bb7c39e7 |
 | `wren-ash-suede-backpack.webp` | https://unsplash.com/photos/d83c853bc5c3 |

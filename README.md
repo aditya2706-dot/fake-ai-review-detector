@@ -7,9 +7,9 @@ inside six hours from accounts that each post four reviews a day is not.
 
 Runs end to end on a laptop with no data downloads: a synthetic marketplace
 generator ships with the project, and real corpora plug in through one adapter.
-One command brings up both faces of it — a **storefront** showing every rating
-with and without its suspected fakes, and a **moderation console** for triaging
-the flags.
+One command brings up both faces of it — a **shop** you can browse, sign in to
+and buy from, where every rating is shown with and without its suspected fakes,
+and a **moderation console** for triaging the flags.
 
 ```
 Review text ──▶ TF-IDF word+char ──▶ LogisticRegression ──▶ text_score ──┐
@@ -71,7 +71,7 @@ make setup      # 1. venv + editable install       (macOS also: brew install lib
 make dataset    # 2. synthesise 40k reviews into data/processed/
 make train      # 3. train + evaluate; writes artifacts/models/detector.joblib
 make web-setup  # 4. npm install for the console
-make console    # 5. API on :8000 + console on :5173
+make app        # 5. API on :8000 + shop on :5173
 ```
 
 Variants worth knowing:
@@ -174,7 +174,7 @@ Defaults work with no environment set; these are the overrides.
 | `[dataset] parquet unavailable (...); wrote CSV` | harmless — pyarrow is not installed, so the corpus is CSV. `pip install pyarrow` if you want parquet. |
 | CLI says `no model at .../detector.joblib` | run `make train`, or point `--model` at an existing one |
 | Console reports a missing model or corpus | `make status` says which; `make train` or `make dataset` |
-| Console loads but the queue errors | the API is not up — `curl localhost:8000/health`, or use `make console`, which runs both |
+| The page loads but the shop or queue errors | the API is not up — `curl localhost:8000/health`, or use `make app`, which runs both |
 
 ---
 
@@ -444,47 +444,43 @@ n-grams survive them.
 
 ---
 
-## The storefront
+## The shop
 
-The console answers a moderator's question. `make console` also serves the one a
+The console answers a moderator's question. `make app` also serves the one a
 shopper has: **given that some of these reviews are paid, what is this product
-actually rated?** Same API, same scores, same corpus cache — the `Shop` /
-`Console` switch in the top left is the only thing that changes.
+actually rated?** Same API, same scores, same corpus cache.
 
-![The storefront](docs/images/shop-home.png)
+![The shop](docs/images/shop-home.png)
 
-Every listing is shown twice: as the marketplace rates it, and with the reviews
-the detector will not stand behind taken out. Across 888 products it withholds
-7,417 of 40,000 reviews (18.5%).
+It is a working store rather than a diagram of one: 61 listings across eight
+departments with real copy, specifications, variants and stock; accounts with
+email and password; a basket that survives signing in; and a checkout that
+records an order. The point of building all that is that the rating claim only
+means anything in a place you would plausibly buy something.
 
-**The honest headline is that on most products this changes nothing.** The
-median rating moves 0.008 of a star. That is not a bug and it is not hidden —
-fakes in this corpus average 3.84 stars against genuine 3.70, because 22% of
+![A department](docs/images/shop-listing.png)
+
+**The honest headline is that on most products the detector changes nothing.**
+The median rating moves 0.006 of a star. That is not a bug and it is not hidden
+— fakes in this corpus average 3.84 stars against genuine 3.70, because 22% of
 campaigns are one-star competitor attacks and sophisticated farms deliberately
 mix in 3s and 4s to keep a rating histogram looking organic. A detector that
 moved every rating would be a detector agreeing with its own priors.
 
-Manipulation is **concentrated**, and it runs **both directions**. Of the 262
-products with enough reviews to rank, 112 move by at least 0.1 of a star: 59
-inflated by paid reviews, 53 pushed *down* by attack campaigns. That near-even
-split is why the storefront ranks by absolute change rather than by "most
-suspicious", and why the trust panel has language for a product that was
-attacked, not just one that was puffed up.
+Manipulation is **concentrated**, and it runs **both directions**. Of the 61
+listings, 20 move by at least 0.1 of a star: 13 inflated by paid reviews, 7
+pushed *down* by attack campaigns. That split is why the shop ranks by absolute
+change rather than by "most suspicious", and why the trust panel has language
+for a product that was attacked, not just one that was puffed up.
 
 ![A product page](docs/images/shop-product.png)
 
-This one was buried. 46 of its 49 reviews are a competitor attack campaign;
-withholding them takes it from **★1.90 to ★4.33**, and the rating breakdown
-shows where the one-star reviews went. The panel also refuses to oversell
-it: the cleaned figure rests on the three reviews that survived, and it says so
-in the same box rather than in a footnote.
-
-Three deliberate choices, each of them a refusal:
+Four deliberate choices, each of them a refusal:
 
 **It withholds at the auto-remove line, not the queue threshold.** The decision
 policy already draws two lines — above 0.28 a human should look, above 0.53 the
-platform will act unattended. A storefront hiding everything above the *queue*
-line would suppress at 90.9% precision with no moderator involved — one wrongly
+platform will act unattended. A shop hiding everything above the *queue* line
+would suppress at 90.9% precision with no moderator involved — one wrongly
 hidden review in eleven. Withholding at the auto-remove line instead runs at
 96.5%, one in twenty-nine: the same choice the policy already made for
 unattended removal, and it cuts the wrongful-suppression rate by more than
@@ -492,27 +488,64 @@ half. Reviews between the two lines stay visible, marked, and go to a human
 instead.
 
 **It does not print a cleaned rating that did not change.** Below 0.1 of a star
-the panel collapses to one quiet line. "4.6 → 4.6" on the 57% of rankable
-products where nothing moved teaches shoppers to ignore the badge, which costs
-credibility on the products where it matters.
+the panel collapses to one quiet line. "4.6 → 4.6" on every product where
+nothing moved teaches shoppers to ignore the badge, which costs credibility on
+the products where it matters.
 
-**The withheld set is inspectable.** "Show what was withheld" lists the actual
-reviews with their scores and the same reason codes the moderator sees. A trust
-badge that cannot be audited is marketing.
+**The withheld set is inspectable.** The disclosure under the reviews lists the
+actual withheld reviews with their scores and the same reason codes the
+moderator sees. A trust badge that cannot be audited is marketing — and at 94%
+precision some of them plainly are not fake, which you can only judge by
+reading them.
 
-The product listings themselves — names, brands, prices, the generated art —
-are derived from the product id by `data/catalog.py`, because the review schema
-carries a `product_id` and a category and nothing else. Deriving rather than
-storing means no artifact to drift out of sync, and an unfamiliar id from a real
-corpus gets a listing on first request instead of a `KeyError`. No real brand is
-named and no image is fetched: putting a fabricated fraud score next to a real
-company's product is the kind of thing `ROADMAP.md` phase 10 exists to refuse.
+**Nothing here names a real brand.** The catalogue in `data/products.json` is
+hand-authored with invented brands, and every photograph was picked so that no
+real brand is legible in it (`web/public/products/CREDITS.md` records the
+sources). Every listing carries a fabricated review history and a fabricated
+manipulation score; hanging those off a real company's product is the kind of
+thing `ROADMAP.md` phase 10 exists to refuse.
+
+### How 888 corpus products become 61 listings
+
+The review corpus has 888 product ids and the shop has 61 listings.
+`catalog.assign` maps them by ranking each department's corpus products on
+review count and taking the top N. The rule is deliberately one the model has
+no part in: ranking by *manipulation* would stock the shop with exactly the
+products that best demonstrate the detector, and every number on the home page
+would then be a selection effect. The console still works on all 888, and
+`/shop/stats` reports the two counts separately so the shop never implies it
+checked more than it lists.
+
+### Accounts, baskets and orders
+
+`frd.store` is the only part of the repo that writes to a database — SQLite,
+created on first use at `data/store.db`:
+
+* Passwords are hashed with `hashlib.scrypt` (no new dependency), and sessions
+  are opaque random tokens in an httpOnly `SameSite=Lax` cookie, so an XSS bug
+  in the shop cannot walk off with one and a third-party page cannot POST with
+  it attached.
+* Money is integer cents end to end, and the server re-prices every basket from
+  the catalogue on every read. The client sends a slug, a variant and a
+  quantity; it never sends a price.
+* An anonymous basket is claimed and merged at sign-in, because that is the one
+  moment a shop most often silently loses an order.
+* Orders copy the name, price and image of what was bought rather than joining
+  back to a catalogue that will change.
+* Checkout deliberately asks for no card details. There is no payment
+  processor, and a form that looked like it took a card number would be
+  training people to type one into a demo.
+
+Auth sits behind a provider seam (`FRD_AUTH`). `local` is the default and is
+what the tests cover. A `firebase` provider is written — the browser signs in
+with the Firebase SDK and posts the ID token to `/auth/firebase` — but it has
+never been run against a real project, and it is labelled as such in the source.
 
 ---
 
 ## The moderation console
 
-`make console` brings up a React triage queue over the scoring API. It is the
+`make app` also serves a React triage queue at `#/console`, over the same API. It is the
 screen the explanation layer was built for: curated reason codes, tiered
 actions, and an audit trail exist because a moderator has to act on a score, and
 a customer has to be able to appeal it.
@@ -580,7 +613,8 @@ src/frd/
     synth.py              synthetic marketplace: farm rosters, cover traffic,
                           campaigns, label noise
     loaders.py            adapters for real corpora + coverage reporting
-    catalog.py            storefront metadata derived from product ids
+    catalog.py            the shop's catalogue, and the corpus->listing mapping
+    products.json         61 hand-authored listings: copy, specs, variants, stock
     splits.py             temporal and cold-reviewer splits (no random split)
   features/
     behavior.py           31 strictly-backward-looking behavioural features
@@ -597,7 +631,13 @@ src/frd/
     storefront.py         shopper-facing catalogue: ratings with fakes withheld
   cli/                    make_dataset / train / score
 tests/                    100 tests incl. causality proofs + leakage controls
-web/                      React storefront + moderation console; see web/README.md
+  store/                  accounts, baskets, orders (SQLite); the only writer
+    db.py                 schema, connection, money as integer cents
+    auth.py               scrypt passwords, opaque sessions, provider seam
+    carts.py              baskets, server-side pricing, sign-in merge
+    orders.py             checkout and order history
+web/                      React shop + moderation console; see web/README.md
+  public/products/        product photography (Unsplash; see CREDITS.md)
 docs/
   METHODOLOGY.md          why each decision was made; the leakage analysis
   ROADMAP.md              the phases, what is done, what is next

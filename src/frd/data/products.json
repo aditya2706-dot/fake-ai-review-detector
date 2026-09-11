@@ -39,12 +39,12 @@
      "specs":{"Battery":"35 h (ANC on)","Charging":"USB-C","Bluetooth":"5.3, LDAC + AAC","Weight":"301 g"},
      "options":[{"name":"Colour","values":["Brass","Onyx"]}],"stock":38,"tags":["audio","anc","premium"]},
 
-    {"slug":"voltaic-br2-speakers","name":"Voltaic BR-2 Powered Bookshelf Speakers","brand":"Voltaic","category":"electronics","price":399.0,
-     "summary":"A stereo pair that needs nothing else but a plug.",
-     "description":"The amplifier is already inside the left cabinet, so this is a complete system rather than half of one. Rear-ported MDF cabinets want about 20cm of wall clearance; closer than that and the low end goes boomy.",
-     "bullets":["Built-in 2 x 55W class-D amplifier","Optical, RCA, USB-C and Bluetooth in","Hand-finished MDF cabinets","Isolation pads and grilles included"],
-     "specs":{"Power":"2 x 55 W","Driver":"5.25\" woofer, 1\" silk tweeter","Inputs":"Optical, RCA, USB-C, BT 5.0","Weight":"11.4 kg pair"},
-     "options":[{"name":"Finish","values":["Walnut","Matte Black"]}],"stock":24,"tags":["audio","speakers"]},
+    {"slug":"voltaic-drift-earbuds","name":"Voltaic Drift Wireless Earbuds","brand":"Voltaic","category":"electronics","price":149.0,"compare_at":179.0,
+     "summary":"Eight hours in the ear, thirty more in the case.",
+     "description":"Eight hours on the buds and three further charges in the case, which is a week of commuting between wall sockets. Four sizes of tip in the box, because the seal is what decides whether the bass exists and no single tip fits everyone.",
+     "bullets":["8h per charge, 32h with the case","Four ear-tip sizes included","IPX4 — rain and sweat resistant","Each bud works alone for calls"],
+     "specs":{"Battery":"8 h (32 h with case)","Charging":"USB-C and Qi","Rating":"IPX4","Weight":"4.8 g per bud"},
+     "options":[{"name":"Colour","values":["Black","Sand"]}],"stock":88,"tags":["audio","wireless","earbuds"]},
 
     {"slug":"signalcraft-monitor-one","name":"Signalcraft Monitor One Studio Speaker","brand":"Signalcraft","category":"electronics","price":279.0,
      "summary":"A single near-field monitor. Buy one, or buy two.",

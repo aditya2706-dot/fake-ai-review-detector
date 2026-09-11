@@ -1,148 +1,106 @@
 /**
- * The rating block: what the product is rated, and what it is rated once the
- * reviews the detector will not stand behind are taken out.
+ * The panel that tells a shopper what the detector did to this product's rating.
  *
- * Three deliberate refusals here:
+ * THREE THINGS IT IS CAREFUL ABOUT
  *
- * 1. **No cleaned rating unless it moved.** Printing "4.6 -> 4.6" on the 58%
- *    of products where nothing changed teaches shoppers to ignore the badge,
- *    which costs credibility on the products where it matters. Below the
- *    server's `material_delta`, this collapses to one quiet line.
- * 2. **The withheld set is inspectable, not asserted.** The "why" panel lists
- *    the actual reviews with their moderator reason codes. A trust badge that
- *    cannot be audited is marketing.
- * 3. **A thin cleaned rating says so.** Some products lose 46 of 49 reviews;
- *    the mean of the three survivors is the best estimate available and still
- *    not worth much, and the panel says which of those two it is.
+ * 1. It is quiet when nothing happened. On most products cleaning moves the
+ *    rating by hundredths of a star, and a panel that announces "verified!"
+ *    on all of them teaches the eye to skip it -- which costs exactly the
+ *    credibility needed on the one product in six where it matters.
+ *
+ * 2. It shows the arithmetic, not a verdict. Both ratings, the number of
+ *    reviews behind each, and a link to the ones that were removed. A badge
+ *    saying "trusted" would be an assertion; this is an argument someone can
+ *    check.
+ *
+ * 3. It says when its own number is weak. `adjusted_thin` means the cleaned
+ *    rating rests on fewer survivors than the server is willing to stand
+ *    behind, and that is printed rather than quietly rounded away.
  */
 
-import { useState } from "react";
-import type { ProductDetail, ShopReview } from "../types";
-import { DIRECTION_COPY, Stars } from "./bits";
+import type { ProductDetail } from "../types";
+import { Stars } from "./bits";
 
 export function TrustPanel({ detail }: { detail: ProductDetail }) {
-  const [open, setOpen] = useState(false);
   const p = detail.product;
-  const copy = DIRECTION_COPY[p.direction] ?? DIRECTION_COPY.unchanged;
-  const moved = p.material && p.delta !== null && p.adjusted_rating !== null;
+  const moved = p.material && p.delta !== null;
+  const up = (p.delta ?? 0) > 0;
+  const hist = detail.rating_histogram.shown;
+  const maxBar = Math.max(1, ...Object.values(hist));
 
   return (
-    <section className="trust">
-      <div className="trust-raw">
-        <div className="trust-label">Listed rating</div>
-        <div className="trust-row">
-          <Stars value={p.raw_rating} size={19} />
-          <strong>{p.raw_rating?.toFixed(2) ?? "—"}</strong>
-          <span className="muted">{p.n_reviews.toLocaleString()} reviews</span>
-        </div>
-      </div>
+    <aside className={`trust ${moved ? "moved" : ""}`}>
+      <h3>{moved ? "We corrected this rating" : "This rating checks out"}</h3>
+      <p className="lede">
+        {moved
+          ? up
+            ? "Reviews on this product look like a competitor attack campaign. With them removed, it rates higher than the shop was showing."
+            : "Reviews on this product look paid for. With them removed, it rates lower than the shop was showing."
+          : detail.total_withheld > 0
+            ? "Some reviews here look inauthentic, but removing them does not meaningfully change the score."
+            : "Nothing on this product looks inauthentic."}
+      </p>
 
       {moved ? (
-        <div className={`trust-clean ${p.delta! > 0 ? "up" : "down"}`}>
-          <div className="trust-label">
-            Rating with suspected fakes removed
-            <span className="badge">{copy.label}</span>
+        <div className="trust-nums">
+          <div className="trust-num was">
+            <span className="k">As listed</span>
+            <span className="v">{p.raw_rating?.toFixed(2) ?? "—"}</span>
           </div>
-          <div className="trust-row">
-            <Stars value={p.adjusted_rating} size={19} />
-            <strong>{p.adjusted_rating!.toFixed(2)}</strong>
-            <span className={`delta ${p.delta! > 0 ? "up" : "down"}`}>
-              {p.delta! > 0 ? "▲" : "▼"} {Math.abs(p.delta!).toFixed(2)} stars
-            </span>
+          <span className="trust-arw">→</span>
+          <div className={`trust-num now ${up ? "up" : "down"}`}>
+            <span className="k">Corrected</span>
+            <span className="v">{p.adjusted_rating?.toFixed(2) ?? "—"}</span>
           </div>
-          <p className="trust-note">
-            {p.n_withheld.toLocaleString()} of {p.n_reviews.toLocaleString()} reviews{" "}
-            {copy.blurb}.
-            {p.adjusted_thin ? (
-              <>
-                {" "}
-                <span className="warn">
-                  This figure rests on the {p.n_shown} review
-                  {p.n_shown === 1 ? "" : "s"} that remain, so it is an estimate
-                  rather than a settled rating.
-                </span>
-              </>
-            ) : null}
-          </p>
-          <button className="link" onClick={() => setOpen(!open)}>
-            {open ? "Hide what was withheld" : `Show what was withheld (${detail.total_withheld})`}
-          </button>
         </div>
       ) : (
-        <div className="trust-clean flat">
-          <div className="trust-label">Checked for review manipulation</div>
-          <p className="trust-note">
-            {p.n_withheld > 0
-              ? `${p.n_withheld.toLocaleString()} review${p.n_withheld === 1 ? "" : "s"} withheld, but the rating moves by less than ${detail.material_delta} of a star — not enough to change what this listing claims.`
-              : "Nothing on this listing scored high enough to withhold."}
-          </p>
-          {detail.total_withheld > 0 ? (
-            <button className="link" onClick={() => setOpen(!open)}>
-              {open ? "Hide what was withheld" : `Show what was withheld (${detail.total_withheld})`}
-            </button>
-          ) : null}
+        <div className="trust-nums">
+          <div className="trust-num">
+            <span className="k">Rating</span>
+            <span className="v">{(p.adjusted_rating ?? p.raw_rating)?.toFixed(2) ?? "—"}</span>
+          </div>
+          <Stars value={p.adjusted_rating ?? p.raw_rating} size={16} />
         </div>
       )}
 
-      {p.n_under_review > 0 ? (
-        <p className="trust-under">
-          {p.n_under_review.toLocaleString()} further review
-          {p.n_under_review === 1 ? " is" : "s are"} flagged for a human to check
-          and {p.n_under_review === 1 ? "is" : "are"} still shown below. Only
-          reviews the policy will act on unattended (score ≥{" "}
-          {detail.auto_remove_at.toFixed(2)}) are withheld.
-        </p>
-      ) : null}
-
-      {open ? <WithheldList detail={detail} /> : null}
-    </section>
-  );
-}
-
-function WithheldList({ detail }: { detail: ProductDetail }) {
-  return (
-    <div className="withheld">
-      <div className="withheld-head">
-        Withheld reviews — top {detail.withheld.length} of{" "}
-        {detail.total_withheld.toLocaleString()} by score
+      <div className="bars">
+        {["5", "4", "3", "2", "1"].map((star) => (
+          <div className="bar" key={star}>
+            <span className="bar-k">{star}</span>
+            <span className="bar-t">
+              <span className="bar-f"
+                    style={{ width: `${(100 * (hist[star] ?? 0)) / maxBar}%` }} />
+            </span>
+            <span className="bar-n">{hist[star] ?? 0}</span>
+          </div>
+        ))}
       </div>
-      {detail.withheld.map((r) => <WithheldRow key={r.review_id} review={r} />)}
-      <p className="withheld-foot">
-        Scores are calibrated probabilities from the model in{" "}
-        <code>artifacts/models/</code>; reason codes are the same ones a
-        moderator sees in the console. Nothing here is deleted — it is withheld
-        from the rating on this page and remains auditable and appealable.
-      </p>
-    </div>
-  );
-}
 
-function WithheldRow({ review }: { review: ShopReview }) {
-  return (
-    <div className="withheld-row">
-      <div className="withheld-meta">
-        <span className="score">{review.score.toFixed(3)}</span>
-        <span className="muted">{review.rating.toFixed(0)}★</span>
-        <span className="muted">{review.reviewer_id}</span>
-        <span className="muted">{new Date(review.timestamp).toLocaleDateString()}</span>
-        {review.in_train_period ? (
-          <span className="tag-train" title="This review falls inside the period the model was fitted on, so its score is partly memorised.">
-            fitted period
-          </span>
+      <div className="trust-line">
+        Rated by <b>{p.n_shown.toLocaleString()}</b> reviews.{" "}
+        {detail.total_withheld > 0 ? (
+          <>
+            <b>{detail.total_withheld.toLocaleString()}</b> more scored at or
+            above {detail.auto_remove_at.toFixed(2)} and were withheld.
+          </>
+        ) : (
+          <>None were withheld.</>
+        )}
+        {p.n_under_review > 0 ? (
+          <>
+            {" "}Another <b>{p.n_under_review}</b>{" "}
+            {p.n_under_review === 1 ? "is" : "are"} flagged for a human to look
+            at and are still counted above — a model's suspicion is not grounds
+            for removing a review.
+          </>
         ) : null}
-        {review.label !== null ? (
-          <span className={`tag-truth ${review.label ? "fake" : "genuine"}`}>
-            {review.label ? "truly fake" : "actually genuine"}
-          </span>
+        {p.adjusted_thin ? (
+          <>
+            {" "}Treat the corrected figure with care: it rests on fewer than{" "}
+            {detail.product.n_shown + 1} surviving reviews.
+          </>
         ) : null}
       </div>
-      {review.title ? <div className="withheld-title">{review.title}</div> : null}
-      <p className="withheld-text">{review.text}</p>
-      {review.reasons?.length ? (
-        <ul className="reasons">
-          {review.reasons.map((r) => <li key={r}>{r}</li>)}
-        </ul>
-      ) : null}
-    </div>
+    </aside>
   );
 }

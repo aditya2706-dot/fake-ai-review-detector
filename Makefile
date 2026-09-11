@@ -3,7 +3,7 @@ PY := .venv/bin/python
 PIP := .venv/bin/pip
 
 .PHONY: help up stop status setup dataset train train-fast score serve test \
-        lint clean docker web-setup web console web-build \
+        lint clean docker web-setup web app console web-build store-reset \
         need-venv need-data need-model need-web
 
 help:  ## Show this list
@@ -24,7 +24,7 @@ up:  ## Everything: set up whatever is missing, then run the app
 	@$(MAKE) --no-print-directory need-data
 	@$(MAKE) --no-print-directory need-model
 	@$(MAKE) --no-print-directory need-web
-	@$(MAKE) --no-print-directory console
+	@$(MAKE) --no-print-directory app
 
 need-venv:
 	@test -x $(PY) || { echo "==> no venv yet"; $(MAKE) --no-print-directory setup; }
@@ -40,20 +40,21 @@ need-model:
 
 need-web:
 	@test -d web/node_modules \
-	  || { echo "==> console dependencies not installed"; \
+	  || { echo "==> web dependencies not installed"; \
 	       $(MAKE) --no-print-directory web-setup; }
 
 stop:  ## Stop anything left running on :8000 or :5173
 	@pkill -f "uvicorn frd.api.main:app" 2>/dev/null && echo "stopped API" || echo "no API running"
-	@pkill -f "$(CURDIR)/web/node_modules/.bin/vite" 2>/dev/null && echo "stopped console" || echo "no console running"
+	@pkill -f "$(CURDIR)/web/node_modules/.bin/vite" 2>/dev/null && echo "stopped web app" || echo "no web app running"
 
 status:  ## What is set up and what is running
 	@printf "venv       %s\n" "$$(test -x $(PY) && echo yes || echo 'no  -- make setup')"
 	@printf "dataset    %s\n" "$$(ls data/processed/reviews.parquet data/processed/reviews.csv 2>/dev/null | head -1 || echo 'no  -- make dataset')"
 	@printf "model      %s\n" "$$(test -f artifacts/models/detector.joblib && echo yes || echo 'no  -- make train')"
 	@printf "web deps   %s\n" "$$(test -d web/node_modules && echo yes || echo 'no  -- make web-setup')"
+	@printf "shop db    %s\n" "$$(test -f data/store.db && echo yes || echo 'none yet (created on first sign-up)')"
 	@printf "API :8000  %s\n" "$$(curl -s -m 1 -o /dev/null localhost:8000/health && echo running || echo stopped)"
-	@printf "app :5173  %s\n" "$$(curl -s -m 1 -o /dev/null localhost:5173 && echo running || echo stopped)"
+	@printf "shop :5173 %s\n" "$$(curl -s -m 1 -o /dev/null localhost:5173 && echo running || echo stopped)"
 
 setup:  ## Create the venv and install the package (editable) + dev deps
 	python3 -m venv .venv
@@ -97,20 +98,30 @@ clean:  ## Remove artefacts and caches
 docker:  ## Build the serving image
 	docker build -t fake-review-detector:latest .
 
-# ---- moderation console (web/) ---------------------------------------------
+# ---- the web app (web/) -----------------------------------------------------
+#
+# One bundle, two surfaces: the shop at #/ and the moderation console at
+# #/console. They are the same scores over the same corpus cache; the
+# difference is what each audience is allowed to act on.
 
-web-setup:  ## Install the console's npm dependencies
+web-setup:  ## Install the web app's npm dependencies
 	cd web && npm install
 
-web:  ## Run the console dev server on :5173 (needs `make serve` alongside)
+web:  ## Run the web dev server on :5173 (needs `make serve` alongside)
 	cd web && npm run dev
 
-console:  ## Run API and console together; open http://localhost:5173
-	@echo "API on :8000, console on :5173. Ctrl-C stops both."
+app:  ## Run API and web app together; open http://localhost:5173
+	@echo "API on :8000, shop on :5173 (console at /#/console). Ctrl-C stops both."
 	@trap 'kill 0' INT TERM EXIT; \
 	 .venv/bin/uvicorn frd.api.main:app --port 8000 & \
 	 (cd web && npm run dev) & \
 	 wait
 
-web-build:  ## Production build of the console into web/dist
+console: app  ## Alias for `make app`, kept for muscle memory
+
+web-build:  ## Production build of the web app into web/dist
 	cd web && npm run build
+
+store-reset:  ## Delete the shop's accounts, baskets and orders
+	rm -f data/store.db data/store.db-wal data/store.db-shm
+	@echo "shop database removed; it is recreated on the next sign-up"

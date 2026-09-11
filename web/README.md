@@ -1,11 +1,12 @@
 # The web app
 
-Two surfaces over one API, switched in the top left:
+Two surfaces over one API:
 
-- **Shop** — what a customer sees. Every rating shown as listed and again with
+- **Shop** (`#/`) — what a customer sees. A browsable catalogue with accounts,
+  a basket and a checkout, where every rating is shown as listed and again with
   suspected fakes withheld.
-- **Console** — what a moderator sees. The ranked queue and the evidence behind
-  each flag.
+- **Console** (`#/console`) — what a moderator sees. The ranked queue and the
+  evidence behind each flag.
 
 Neither reimplements any scoring, feature engineering, or decision policy of its
 own. Both read the FastAPI service in `src/frd/api/`.
@@ -17,14 +18,14 @@ make up            # sets up whatever is missing, then runs everything
 ```
 
 Then open <http://localhost:5173>. If the project is already set up,
-`make console` starts just the two servers, and `make web-setup` / `make web`
+`make app` starts just the two servers, and `make web-setup` / `make web`
 drive the app alone against an API you are running yourself.
 
 The first request features and scores the whole corpus (~20s for 40,000
 reviews) and caches it; everything after that is served from the cache. Both
 surfaces read that one cache, so whichever you open first pays for it. The page
 waits for the API rather than failing if it is still loading its model, which is
-the normal case for a second or two after `make console`.
+the normal case for a second or two after `make app`.
 
 Needs a trained model (`make train`) and a corpus (`make dataset`) — `make up`
 does both. Without either, the app says which one is missing rather than
@@ -34,11 +35,22 @@ rendering an empty page.
 
 A hash router in `router.ts`, thirty lines and no dependency:
 
-| route | surface |
+| route | page |
 |---|---|
-| `#/shop` | the catalogue, plus the products whose ratings move most |
-| `#/shop/P00207` | one product page |
+| `#/` | the shop front: departments, new in, the ratings we corrected |
+| `#/c/home_kitchen` | a department listing, with facets and sorting |
+| `#/search?q=kettle` | search results, same component as a department |
+| `#/p/ferro-dutch-oven` | a product page |
+| `#/cart` | the basket |
+| `#/checkout` | address and place order |
+| `#/order/ORD-1A2B3C4D` | one order |
+| `#/orders`, `#/account` | order history, account |
+| `#/signin` | sign in / create an account |
 | `#/console` | the moderation queue |
+
+Products are addressed by **slug**, not by corpus id: `/p/ferro-dutch-oven` is
+a URL a shop can publish, `/p/P00782` is an internal identifier that happens to
+be routable.
 
 Hash rather than the History API because the built bundle is served as static
 files from whatever path the API or a CDN puts it under, and a hash needs no
@@ -46,15 +58,21 @@ server-side rewrite rule to survive a refresh.
 
 ## What the shop shows
 
-**The catalogue.** Product listings — names, brands, prices, generated art —
-derived from the product id by `frd.data.catalog`, because the review schema
-carries an id and a category and nothing else. A card shows the cleaned rating
-and carries a trust chip *only* when cleaning actually moved it.
+**The catalogue.** 61 hand-authored listings from `src/frd/data/products.json`
+— copy, specifications, variants, stock and photography — attached to corpus
+products by `frd.data.catalog.assign`. A tile shows the cleaned rating and
+carries a trust note *only* when cleaning actually moved it.
 
-**The product page.** The listing, the rating both ways, the rating breakdown as
-listed against after withholding, and the reviews that survived. "Show what was
-withheld" lists the reviews that did not, each with its score and the same
-reason codes the console shows a moderator.
+**The product page.** The listing and its variants, the buy box, the rating
+both ways, the rating breakdown after withholding, and the reviews that
+survived. The disclosure under them lists the reviews that did not, struck
+through, each with its score and the same reason codes the console shows a
+moderator.
+
+**The basket and checkout.** A real basket that survives signing in, and a
+checkout that records an order against the account. Every price and total comes
+from the server; the client sends a slug, a variant and a quantity, never a
+price. No card details are asked for — see the root README.
 
 **Reviews the model finds suspicious but a human has not confirmed** stay
 visible, marked. Only the `auto_remove` tier is withheld.
@@ -97,34 +115,49 @@ whole history; it has the reviews it has. So every review carries
 
 ## Styling
 
-One stylesheet, two palettes. The console is dark and looks like an operator
-tool; the storefront is light and looks like a store. Every storefront rule is
-scoped under `.shop` and its tokens (`--s-*`) are declared there, so the two
-cannot bleed into each other. This is not hypothetical tidiness: the shop's
-rating histogram originally reused `.hist`, which the console sidebar's score
-sparkline already owned as `display: flex`, and the shop's panel rendered
-sideways. It is `.rhist` now, and the scoping is what stops the next one.
+Two stylesheets, two palettes. `styles.css` is the console: dark, dense,
+monospaced numbers, and it looks like an operator tool. `shop.css` is the shop:
+light, roomy, quiet. Every shop rule is scoped under `.shop` and its tokens are
+declared there, so the two cannot bleed into each other. This is not
+hypothetical tidiness — when they shared one file, the shop's rating histogram
+reused a class the console sidebar's sparkline already owned as
+`display: flex`, and the shop's panel rendered sideways.
+
+The quiet is load-bearing. The shop's one unusual claim is that a rating can be
+wrong, and a page that shouts everywhere has nothing left for the products where
+that matters.
 
 ## Layout
 
 ```
 src/
-  api.ts                    fetch wrapper; surfaces FastAPI's `detail` on errors
+  api.ts                    fetch wrapper; credentials: include for the session cookie
   types.ts                  mirrors the server payloads
   lib.ts                    tiering, formatting, localStorage verdicts
-  router.ts                 hash router
-  App.tsx                   the shell: route switch, health/wait, footer
+  router.ts                 hash router, ten routes
+  App.tsx                   the shell: route switch, health/wait
+  styles.css                console theme      shop.css  shop theme
+  state/
+    shop.tsx                one provider: who is signed in + what is in the basket
   shop/
-    Storefront.tsx          the finding, the movers lane, the catalogue grid
-    ProductPage.tsx         listing, reviews, rating breakdown
+    Layout.tsx              header, department nav, search, footer
+    Home.tsx                departments, new in, the ratings we corrected
+    Listing.tsx             a department or a search, one component
+    Product.tsx             listing, variants, buy box, reviews, withheld
     TrustPanel.tsx          the rating both ways + the withheld audit trail
-    bits.tsx                stars, money, generated product art
+    Cart.tsx                basket and the shared order summary
+    Checkout.tsx            address, place order
+    Orders.tsx              confirmation and order history
+    Account.tsx             sign in, register, account
+    bits.tsx                stars, money, photos, product tiles
   console/
     Console.tsx             state, data fetching, race-safe pagination
     Sidebar.tsx             tier counts, corpus facts, score histogram
     ThresholdPanel.tsx      the slider and its cost readout
     QueueTable.tsx          the ranked list
     DetailDrawer.tsx        evidence: reasons, SHAP, tokens, neighbours
+public/
+  products/                 the catalogue's photography + CREDITS.md
 ```
 
 ## Configuration
@@ -135,16 +168,25 @@ src/
 | `VITE_API_BASE` | API base for a built bundle | `/api` |
 | `FRD_CORS_ORIGINS` | allowed origins, on the API | `http://localhost:5173,http://127.0.0.1:5173` |
 | `FRD_DATA_PATH` | corpus, on the API | `data/processed/reviews.{parquet,csv}` |
+| `FRD_STORE_DB` | shop database, on the API | `data/store.db` |
+| `FRD_AUTH` | identity provider | `local` (or `firebase`) |
+| `FRD_SECURE_COOKIES` | mark cookies Secure (needs https) | off |
 
 ## Not built, on purpose
 
-Moderator verdicts live in `localStorage`. A real console records decisions
+**Moderator verdicts live in `localStorage`.** A real console records decisions
 durably with the reason codes attached and exposes them to an appeals process
 (ROADMAP phase 9); faking that with a browser-local JSON blob would be worse
-than obviously not doing it. There is no auth, and both surfaces are read-only
-against the corpus — nothing here writes back.
+than obviously not doing it. The console has no auth of its own, and it is
+read-only against the corpus — nothing there writes back.
 
-Nothing in the shop is for sale. `Add to basket` is inert, there is no cart, and
-no listing describes a real product: names and prices are generated from the
-product id, and no real brand is named. Attaching a fabricated fraud score to a
-real company's product is what `docs/ROADMAP.md` phase 10 is about.
+**Nothing in the shop is really for sale.** Orders are recorded and no payment
+is taken; the checkout deliberately has no card field. No listing describes a
+real product: the brands are invented, and every photograph was chosen so that
+no real brand is legible in it. Attaching a fabricated fraud score to a real
+company's product is what `docs/ROADMAP.md` phase 10 is about.
+
+**Shoppers cannot write reviews yet.** Every review in the shop comes from the
+corpus. Letting a signed-in customer post one — and watching the detector score
+it live — is the obvious next step, and it is the reason accounts and orders
+exist at all.
