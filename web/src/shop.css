@@ -197,6 +197,8 @@
 .sec-head a:hover { color: var(--ink); border-bottom-color: var(--ink); }
 
 .depts { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; }
+.depts.single { grid-template-columns: 1fr; }
+.depts.single .dept { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .dept {
   display: block; padding: 18px 18px 20px; border: 1px solid var(--line);
   border-radius: 11px; transition: border-color 0.15s ease, background 0.15s ease;

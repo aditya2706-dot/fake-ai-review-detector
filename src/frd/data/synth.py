@@ -62,10 +62,7 @@ from ..schema import (
     normalise,
 )
 
-CATEGORIES = [
-    "electronics", "home_kitchen", "beauty", "sports", "toys",
-    "clothing", "pet_supplies", "office",
-]
+CATEGORIES = ["electronics"]
 
 # --- Shared vocabulary -----------------------------------------------------
 # Deliberately shared between classes. Separation must come from HOW these are

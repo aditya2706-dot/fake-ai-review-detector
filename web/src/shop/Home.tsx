@@ -78,7 +78,7 @@ export function Home({ stats }: { stats: ShopStats }) {
           <div className="sec-head">
             <div><h2>Departments</h2></div>
           </div>
-          <div className="depts">
+          <div className={stats.departments.length === 1 ? "depts single" : "depts"}>
             {stats.departments.map((d) => (
               <a key={d.key} className="dept" href={href({ name: "department", key: d.key })}>
                 <b>{d.name}</b>

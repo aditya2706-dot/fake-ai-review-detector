@@ -44,7 +44,7 @@ from frd.train import prepare_dataset
 
 # --- the catalogue ---------------------------------------------------------
 
-def _corpus(n_per_category: int = 20) -> dict[str, tuple[str, int]]:
+def _corpus(n_per_category: int = 80) -> dict[str, tuple[str, int]]:
     """A fake corpus: every department populated, with descending review counts."""
     out: dict[str, tuple[str, int]] = {}
     i = 0
@@ -105,17 +105,23 @@ def test_assign_ranks_by_review_count_not_by_anything_scored():
     manipulation would stock the shop with the products that best demonstrate
     the detector and make every headline number a selection effect.
     """
-    corpus = {"P1": ("toys", 5), "P2": ("toys", 900), "P3": ("toys", 50)}
+def test_assign_ranks_by_review_count_not_by_anything_scored():
+    """The catalogue's lead products go to the corpus items with the most reviews.
+
+    Crucially NOT ranked by score or rating, because the store's merchandising
+    order must stay independent of manipulation signals.
+    """
+    corpus = {"P1": ("electronics", 5), "P2": ("electronics", 900), "P3": ("electronics", 50)}
     got = assign(corpus)
-    first = next(i for i in listings() if i["category"] == "toys")
+    first = next(i for i in listings() if i["category"] == "electronics")
     assert got["P2"].slug == first["slug"]
 
 
 def test_assign_skips_departments_the_corpus_cannot_fill():
     """A shop cannot list a product with no reviews behind it."""
-    got = assign({"P1": ("toys", 100)})
+    got = assign({"P1": ("electronics", 100)})
     assert len(got) == 1
-    assert got["P1"].category == "toys"
+    assert got["P1"].category == "electronics"
 
 
 def test_variant_lookup_is_the_pricing_path():
@@ -137,7 +143,7 @@ def _store(rows: list[tuple[str, float, float]]) -> dict:
     df = pd.DataFrame({
         "review_id": [f"R{i}" for i in range(len(rows))],
         "product_id": [r[0] for r in rows],
-        "category": ["toys"] * len(rows),
+        "category": ["electronics"] * len(rows),
         "rating": [r[1] for r in rows],
         "score": [r[2] for r in rows],
         "timestamp": pd.date_range("2024-01-01", periods=len(rows), tz="UTC"),
