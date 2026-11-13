@@ -3,7 +3,7 @@ PY := .venv/bin/python
 PIP := .venv/bin/pip
 
 .PHONY: help up stop status setup dataset train train-fast score serve test \
-        lint clean docker deploy deploy-logs web-setup web app console \
+        lint clean docker deploy deploy-logs deploy-vm deploy-vm-logs web-setup web app console \
         web-build store-reset need-venv need-data need-model need-web
 
 help:  ## Show this list
@@ -118,6 +118,30 @@ deploy:  ## Deploy to Fly.io (needs flyctl, and `make up` to have run once)
 
 deploy-logs:  ## Tail the deployed app's logs
 	flyctl logs
+
+# Self-hosted, $0: a free Oracle Cloud or Google Cloud VM (see deploy/vm/README.md).
+# The image is built ON the VM, so this machine needs no Docker -- it only
+# ships the tree, including the gitignored model and corpus.
+#   make deploy-vm VM=ubuntu@1.2.3.4            # domain defaults to 1-2-3-4.sslip.io
+#   make deploy-vm VM=ubuntu@1.2.3.4 DOMAIN=shop.example.com
+VM_HOST = $(lastword $(subst @, ,$(VM)))
+DOMAIN ?= $(subst .,-,$(VM_HOST)).sslip.io
+
+deploy-vm:  ## Deploy to your own VM: make deploy-vm VM=ubuntu@<ip>
+	@test -n "$(VM)" || { echo "usage: make deploy-vm VM=ubuntu@<public-ip>"; exit 1; }
+	@test -f artifacts/models/detector.joblib \
+	  || { echo "no trained model -- run 'make train' before deploying"; exit 1; }
+	@test -f data/processed/reviews.csv \
+	  || { echo "no data/processed/reviews.csv -- the image reads the CSV (no pyarrow in it); run 'make dataset'"; exit 1; }
+	rsync -az --delete \
+	  --exclude .git --exclude .venv --exclude 'web/node_modules' --exclude 'web/dist' \
+	  --exclude '__pycache__' --exclude 'data/raw' --exclude 'data/store.db*' \
+	  ./ $(VM):app/
+	ssh $(VM) 'cd app && DOMAIN=$(DOMAIN) docker compose -f deploy/vm/compose.yml up -d --build'
+	@echo "==> live at https://$(DOMAIN) (first boot: allow ~30s for the certificate and the model)"
+
+deploy-vm-logs:  ## Tail the VM deployment's logs: make deploy-vm-logs VM=ubuntu@<ip>
+	ssh $(VM) 'cd app && DOMAIN=$(DOMAIN) docker compose -f deploy/vm/compose.yml logs -f --tail=100'
 
 # ---- the web app (web/) -----------------------------------------------------
 #
