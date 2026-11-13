@@ -637,6 +637,10 @@ tests/                    100 tests incl. causality proofs + leakage controls
     carts.py              baskets, server-side pricing, sign-in merge
     orders.py             checkout and order history
 web/                      React shop + moderation console; see web/README.md
+deploy/
+  vm/                     compose + Caddy for a free VM (Google or Oracle)
+  vercel/                 a rewrite that gives the VM a *.vercel.app address
+  cloudflare-worker/      the same on *.workers.dev, with edge caching
   public/products/        product photography (Unsplash; see CREDITS.md)
 docs/
   METHODOLOGY.md          why each decision was made; the leakage analysis
@@ -648,38 +652,86 @@ docs/
 
 ## Deploying
 
+Live at **<https://veritymarket.vercel.app>** (console:
+[`/#/console`](https://veritymarket.vercel.app/#/console)), running for $0.
+
 One container, one origin. The image builds the web bundle with an empty API
 base so the app calls `/health` and `/shop/...` on its own host, and FastAPI
 mounts the built bundle after every API route — so the session cookie is
 same-site by construction and there is no CORS to configure.
 
+### The free setup (what is running)
+
+```
+browser ──► veritymarket.vercel.app ──► Caddy (HTTPS) ──► app container
+            Vercel rewrite, free         └──── Google Cloud e2-micro VM, Always Free ────┘
+```
+
+- **The VM** — a Google Cloud Always Free e2-micro (or an Oracle Cloud Always
+  Free ARM VM) runs `deploy/vm/compose.yml`: the app plus Caddy, which gets a
+  free Let's Encrypt certificate for `<ip-with-dashes>.sslip.io`, so no domain
+  is needed. The image is built on the VM; this machine needs only `ssh` and
+  `rsync`.
+- **The address** — `deploy/vercel/vercel.json` is a single rewrite that proxies
+  every request to the VM, giving it a stable `*.vercel.app` name.
+  `deploy/cloudflare-worker/` does the same on `*.workers.dev` and caches the
+  hashed `/assets/*` at the edge. Either can be dropped; the sslip.io address
+  works on its own.
+
 ```bash
-make up                     # once: generates the corpus and trains the model
+make up                                   # once: generates the corpus and trains the model
+make deploy-vm VM=ubuntu@<vm-ip>          # ship and (re)build on the VM
+make deploy-vm-logs VM=ubuntu@<vm-ip>     # tail it
+cd deploy/vercel && npx vercel deploy --prod   # only if the VM's IP changed
+```
+
+Creating the VM, its firewall and the Google-specific swap setup are in
+[`deploy/vm/README.md`](deploy/vm/README.md). Things worth knowing:
+
+- **After every restart the shop needs ~15 minutes.** The corpus warm-up that
+  takes ~19 s on a laptop took 862 s on the e2-micro's shared CPU and 1 GB of
+  RAM. `/health` and sign-in work at once; the product list waits until the log
+  prints `corpus warm`.
+- **Accounts and orders survive redeploys** in the `verity-market_frd_data`
+  volume. The Compose project name is pinned, so renaming `deploy/vm/` cannot
+  silently start a fresh database.
+- **"Free" has edges.** Google's free tier includes ~1 GB/month of egress and
+  only the e2-micro with a *standard* disk in three US regions; set a billing
+  budget, which alerts but does not cap. Vercel's Hobby plan is for
+  non-commercial use.
+
+### Fly.io (paid alternative)
+
+```bash
 fly launch --no-deploy --copy-config --name <your-app>
 fly volumes create frd_data --size 1 --region lhr
 make deploy
 ```
 
+Fly has no free tier for new accounts, but it is a single command per deploy
+and a faster CPU (the warm-up is seconds, not minutes).
+
+### How the image is built
+
 **The image does not train.** It copies `artifacts/models/detector.joblib` and
 `data/processed/reviews.csv` out of your working tree, both of which are
 gitignored and therefore absent from a clone. That is deliberate — training in
 the build would add minutes to every deploy and would ship a model that is not
-the one this README's numbers describe — and `make deploy` refuses to run
-before `make up` has produced them rather than letting you discover it from a
-503 in production.
+the one this README's numbers describe — and `make deploy` / `make deploy-vm`
+refuse to run before `make up` has produced them rather than letting you
+discover it from a 503 in production. The image reads the CSV, not parquet.
 
 **It is pinned to one machine, and that is a real constraint.** Accounts,
-baskets and orders are one SQLite file on one Fly volume, and a volume attaches
-to a single machine. Scaling to two would give each its own database: sign in
-on one, and the other has never heard of you. `frd.store.db` is the only module
+baskets and orders are one SQLite file on one volume, and a volume attaches to
+a single machine. Scaling to two would give each its own database: sign in on
+one, and the other has never heard of you. `frd.store.db` is the only module
 that would have to change to move to Postgres, and that is the point at which
 it should.
 
-**Measured, not estimated:** 148 MB resident with all 40,000 reviews featured,
-scored and cached, so the 512 MB VM has real headroom. Scoring the corpus takes
-~19 s, which `FRD_WARM_CORPUS=1` moves to startup in a background thread — the
-health check passes while it runs, and the first visitor after a deploy gets a
-warm cache instead of a 19-second wait.
+**Measured, not estimated:** 148 MB resident locally and ~210 MB on the VM
+with all 40,000 reviews featured, scored and cached. `FRD_WARM_CORPUS=1` moves
+scoring to startup in a background thread — the health check passes while it
+runs, and the first visitor after a deploy gets a warm cache instead of a wait.
 
 | Variable | Set in the image to | Why |
 |---|---|---|
@@ -690,15 +742,10 @@ warm cache instead of a 19-second wait.
 
 ### What has and has not been verified
 
-The application side of this configuration was tested end to end: the bundle
-served from the API's own origin, the corpus warmed at startup, and
-register → add to basket → checkout completed against it with an httpOnly
-session cookie and no CORS involved.
-
-The **Docker build and the Fly deploy have not been run** — neither `docker`
-nor `flyctl` was available on the machine this was written on. The Dockerfile
-and `fly.toml` are written against the verified configuration, but the first
-`make deploy` is the first time they execute.
+The Docker build and the VM deploy have been run: the image built on the
+e2-micro, Caddy obtained its certificate, and `/health`, the shop, the
+moderation queue and register → sign-in → `/auth/me` were checked through the
+sslip.io, Vercel and Cloudflare addresses. The Fly deploy has not been run.
 
 ### Before making it public
 
@@ -706,7 +753,7 @@ The shop puts a real email-and-password form on the internet. Passwords are
 scrypt-hashed and the session cookie is httpOnly and `SameSite=Lax`, the page
 says plainly that it is a demonstration, and the volume means those accounts
 persist — but people reuse passwords, and there is no rate limiting on
-`/auth/login` yet. A seeded demo account with a visible "sign in as demo"
+`/auth/login` yet. The deployment above is public, so this applies now. A seeded demo account with a visible "sign in as demo"
 button would remove the reason for anyone to type a real password; it is not
 built.
 

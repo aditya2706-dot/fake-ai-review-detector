@@ -1,0 +1,50 @@
+# Self-hosted deployment: the app behind Caddy on one VM.
+#
+# Run from the repo root on the VM:
+#   DOMAIN=1-2-3-4.sslip.io docker compose -f deploy/vm/compose.yml up -d --build
+#
+# Caddy terminates TLS (a free Let's Encrypt certificate, obtained and renewed
+# automatically) and forwards to the app. TLS is not optional here: the image
+# sets FRD_SECURE_COOKIES=1, and over plain http the browser drops the session
+# cookie, so sign-in silently never sticks.
+
+# Pinned so containers and volumes do not take their names from this folder:
+# renaming the folder must not silently start a fresh, empty database.
+name: verity-market
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      # The shop's SQLite database -- the only state that must outlive a
+      # rebuild. A named volume survives `docker compose up --build`.
+      - frd_data:/data
+    # Not published to the host: only Caddy can reach it.
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"       # ACME HTTP challenge + redirect to https
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN, e.g. DOMAIN=1-2-3-4.sslip.io}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates. Losing these means re-issuing, and Let's Encrypt rate
+      # limits re-issues, so they live on a volume too.
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  frd_data:
+  caddy_data:
+  caddy_config:
